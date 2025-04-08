@@ -4,8 +4,23 @@ import random
 import subprocess
 import sys
 import time
+import argparse
+import requests
 from datetime import datetime
 from threading import Thread, Event
+import json
+from scanner import WebScanner
+from torpy import TorClient
+from torpy.http.requests import tor_requests_session
+import ssl
+import socket
+import logging
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # Color codes for terminal output
 class Colors:
@@ -19,395 +34,674 @@ class Colors:
     BOLD = '\033[1m'
     UNDERLINE = '\033[4m'
 
-# Function to get a random color
-def random_color():
-    return random.randint(30, 37)
+def print_section(title):
+    print(f"\n{Colors.BLUE}{'='*50}\n{title.center(50)}\n{'='*50}{Colors.END}")
 
-# Function to print text with dynamic color
-def print_dynamic_color(text):
-    color = random_color()
-    print(f"\033[1;{color}m{text}\033[0m")
+def print_subsection(title):
+    print(f"\n{Colors.CYAN}{'-'*40}\n{title.center(40)}\n{'-'*40}{Colors.END}")
 
-# Function to display the webguard banner
 def webguard_banner():
     try:
         with open("banner.txt", "r") as f:
             banner = f.read()
-        print(f"\033[1;{random_color()}m{banner}\033[0m")
+        color = random.choice([Colors.RED, Colors.GREEN, Colors.YELLOW, Colors.BLUE, Colors.CYAN])
+        print(f"{color}{banner}{Colors.END}")
     except FileNotFoundError:
-        print_dynamic_color("WebGuard Banner")
-    print_dynamic_color("\t ▌║█║▌│║▌│║▌║▌█║WebGuard ▌│║▌║▌│║║▌█║▌║█")
-    print_dynamic_color("\t\t\t𝚃𝙴𝙰𝙼 A𝙴𝚂")
+        print(f"{Colors.RED}{Colors.BOLD}WebGuard Banner{Colors.END}")
+    print(f"{Colors.BOLD}\t ▌║█║▌│║▌│║▌║▌█║WebGuard ▌│║▌║▌│║║▌█║▌║█{Colors.END}")
+    print(f"{Colors.BOLD}\t\t\t𝚃𝙴𝙰𝙼 A𝙴𝚂{Colors.END}")
 
-# Function for loading effect
-def loading_effect(stop_event):
-    loading_text = "Loading...!!!!"
-    loading_animation = "⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿"
-    
-    while not stop_event.is_set():
-        for i in range(len(loading_text)):
-            if stop_event.is_set():
-                break
-            print(f"\033[1;{random_color()}m{loading_animation[i]}\033[0m", end='', flush=True)
-            time.sleep(0.1)
-        print("\r\033[K", end='', flush=True)
+class TorManager:
+    def __init__(self):
+        self.session = None
+        self.is_active = False
+        self.retries = 3
+        self.timeout = 30
+        self.fake_tor = False  # Flag for simulated Tor mode
 
-# Function to perform subdomain enumeration
-def subdomain(target, output_file):
-    print(f"{Colors.BLUE}{Colors.BOLD}PERFORMING SUBDOMAIN ENUMERATION ON {target.upper()}{Colors.END}", flush=True)
-    with open(output_file, "a") as f:
-        f.write(f"=== SUBDOMAIN ENUMERATION ON {target.upper()} ===\n")
-    
-    try:
-        result = subprocess.run(["subfinder", "-d", target, "--silent", "-all"], capture_output=True, text=True)
-        subdomains = [line for line in result.stdout.splitlines() if target in line]
-        
-        with open("sublist.txt", "w") as f:
-            f.write("\n".join(subdomains))
-        
-        with open(output_file, "a") as f:
-            f.write("\n".join(subdomains) + "\n")
-        
-        print("\n".join(subdomains))
-    except Exception as e:
-        print(f"{Colors.RED}Error during subdomain enumeration: {e}{Colors.END}")
+    def _check_tor_connection(self):
+        """Check Tor connection through multiple methods"""
+        # Method 1: Direct check.torproject.org API
+        try:
+            response = requests.get('https://check.torproject.org/api/ip', timeout=self.timeout)
+            if response.json().get('IsTor', False):
+                return True
+        except Exception:
+            pass
 
-# Function to perform passive reconnaissance
-def passive(target, output_file):
-    print(f"{Colors.BLUE}{Colors.BOLD}PERFORMING PASSIVE RECONNAISSANCE...{Colors.END}", flush=True)
-    time.sleep(2)
-    
-    with open(output_file, "a") as f:
-        f.write("\n=== PASSIVE RECONNAISSANCE ===\n")
-        
-        # NSLOOKUP
-        f.write("\n--- NSLOOKUP Results ---\n")
+        # Method 2: DNS request to Tor's DNS port
         try:
-            nslookup = subprocess.run(["nslookup", target], capture_output=True, text=True)
-            nslookup_results = [line for line in nslookup.stdout.splitlines() if "Address:" in line]
-            f.write("\n".join(nslookup_results) + "\n")
-            print("\n".join(nslookup_results))
-        except Exception as e:
-            f.write(f"Error: {e}\n")
-            print(f"{Colors.RED}NSLOOKUP Error: {e}{Colors.END}")
-        
-        # DIG
-        f.write("\n--- DIG Results ---\n")
-        try:
-            dig = subprocess.run(["dig", target], capture_output=True, text=True)
-            dig_results = [line for line in dig.stdout.splitlines() if "ANSWER SECTION" in line]
-            f.write("\n".join(dig_results) + "\n")
-            print("\n".join(dig_results))
-        except Exception as e:
-            f.write(f"Error: {e}\n")
-            print(f"{Colors.RED}DIG Error: {e}{Colors.END}")
-        
-        # WhatWeb
-        f.write("\n--- WhatWeb Results ---\n")
-        try:
-            whatweb = subprocess.run(["whatweb", target], capture_output=True, text=True)
-            f.write(whatweb.stdout + "\n")
-            print(whatweb.stdout)
-        except Exception as e:
-            f.write(f"Error: {e}\n")
-            print(f"{Colors.RED}WhatWeb Error: {e}{Colors.END}")
-        
-        # WHOIS
-        f.write("\n--- WHOIS Results ---\n")
-        try:
-            whois = subprocess.run(["whois", target], capture_output=True, text=True)
-            whois_results = [line for line in whois.stdout.splitlines() if "Registrant" in line or "Registrar" in line]
-            f.write("\n".join(whois_results) + "\n")
-            print("\n".join(whois_results))
-        except Exception as e:
-            f.write(f"Error: {e}\n")
-            print(f"{Colors.RED}WHOIS Error: {e}{Colors.END}")
-        
-        # Subdomain Enumeration
-        subdomain(target, output_file)
-        
-        # Wayback URLs
-        print(f"{Colors.BLUE}{Colors.BOLD}GATHERING PUBLIC ARCHIVES...{Colors.END}", flush=True)
-        f.write("\n--- Wayback URLs Results ---\n")
-        try:
-            wayback = subprocess.run(["waybackurls", "-dates", "-get-versions", target], capture_output=True, text=True)
-            f.write(wayback.stdout + "\n")
-            print(wayback.stdout)
-        except Exception as e:
-            f.write(f"Error: {e}\n")
-            print(f"{Colors.RED}Wayback Error: {e}{Colors.END}")
-        
-        # TheHarvester
-        f.write("\n--- TheHarvester Results ---\n")
-        try:
-            theharvester = subprocess.run(["theHarvester", "-d", target, "-l", "100", "-b", "all"], capture_output=True, text=True)
-            harvester_results = [line for line in theharvester.stdout.splitlines() if target in line]
-            f.write("\n".join(harvester_results) + "\n")
-            print("\n".join(harvester_results))
-        except Exception as e:
-            f.write(f"Error: {e}\n")
-            print(f"{Colors.RED}TheHarvester Error: {e}{Colors.END}")
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(self.timeout)
+                s.connect(('localhost', 9050))  # Default Tor SOCKS port
+                return True
+        except Exception:
+            pass
 
-# Function to perform directory enumeration
-def directory_enum(url, output_file):
-    print(f"{Colors.BLUE}{Colors.BOLD}PERFORMING DIRECTORY AND FILE ENUMERATION ON {url}{Colors.END}", flush=True)
-    with open(output_file, "a") as f:
-        f.write("\n=== DIRECTORY ENUMERATION ===\n")
-    
-    try:
-        gobuster = subprocess.run(["gobuster", "dir", "-u", url, "-w", "common.txt", "-t", "30", "-q", "--no-error"], 
-                                 capture_output=True, text=True)
-        with open(output_file, "a") as f:
-            f.write(gobuster.stdout + "\n")
-        print(gobuster.stdout)
-    except Exception as e:
-        print(f"{Colors.RED}Directory enumeration error: {e}{Colors.END}")
-
-# Function to scrape admin page, phpMyAdmin page, and robots.txt
-def scrape(target_url, output_file):
-    import requests
-    found_result = False
-    
-    with open(output_file, "a") as f:
-        f.write("\n=== ADMIN PANEL AND ROBOTS.TXT CHECK ===\n")
-    
-    # Function to highlight and print specific results
-    def highlight_result(result):
-        print(f"{Colors.RED}{Colors.BOLD}{result}{Colors.END}")
-        with open(output_file, "a") as f:
-            f.write(result + "\n")
-    
-    # Check robots.txt
-    robots_url = f"{target_url.rstrip('/')}/robots.txt"
-    try:
-        response = requests.get(robots_url)
-        if response.status_code == 200:
-            highlight_result(f"Robots.txt entries from {robots_url}:")
-            highlight_result(response.text)
-            found_result = True
-        else:
-            print(f"No robots.txt found at {robots_url}.")
-    except Exception as e:
-        print(f"{Colors.RED}Error checking robots.txt: {e}{Colors.END}")
-    
-    # Check admin pages
-    admin_pages = ["administrator", "admin", "admin/login", "admin/index.php", "administrator/index.php"]
-    for admin_page in admin_pages:
-        admin_url = f"{target_url.rstrip('/')}/{admin_page}"
+        # Method 3: Check for Tor service running
         try:
-            response = requests.get(admin_url)
-            if response.status_code == 200:
-                highlight_result(f"Admin page found: {admin_url}")
-                found_result = True
-                break
-        except Exception as e:
-            continue
-    
-    # Check phpMyAdmin pages
-    phpmyadmin_pages = ["phpmyadmin", "pma", "phpMyAdmin", "phpmyadmin/index.php"]
-    for phpmyadmin_page in phpmyadmin_pages:
-        phpmyadmin_url = f"{target_url.rstrip('/')}/{phpmyadmin_page}"
-        try:
-            response = requests.get(phpmyadmin_url)
-            if response.status_code == 200:
-                highlight_result(f"phpMyAdmin page found: {phpmyadmin_url}")
-                found_result = True
-                break
-        except Exception as e:
-            continue
-    
-    if not found_result:
-        print("No specific results found.")
+            result = subprocess.run(['systemctl', 'is-active', '--quiet', 'tor'])
+            if result.returncode == 0:
+                return True
+        except Exception:
+            pass
 
-# Function for web server enumeration and technology profiling
-def web_server_enum_and_tech_profile(target, output_file):
-    time.sleep(2)
-    print(f"{Colors.BLUE}{Colors.BOLD}PERFORMING TECHNOLOGY PROFILING ON {target}{Colors.END}", flush=True)
-    
-    try:
-        whatweb = subprocess.run(["whatweb", target], capture_output=True, text=True)
-        with open(output_file, "a") as f:
-            f.write("\n=== TECHNOLOGY PROFILING ===\n")
-            f.write(whatweb.stdout + "\n")
-        print(whatweb.stdout)
-    except Exception as e:
-        print(f"{Colors.RED}WhatWeb error: {e}{Colors.END}")
-
-# Function to perform active reconnaissance
-def active(target, output_file):
-    print(f"{Colors.BLUE}{Colors.BOLD}CHECKING THE DOMAIN LIVE STATUS...{Colors.END}", flush=True)
-    
-    # Ping check
-    try:
-        ping = subprocess.run(["ping", "-c", "1", "-W", "1", target], capture_output=True, text=True)
-        if ping.returncode == 0:
-            print(f"{Colors.GREEN}{Colors.BOLD}THE DOMAIN IS LIVE. PROCEEDING WITH THE SCAN...{Colors.END}", flush=True)
-        else:
-            print(f"{Colors.RED}{Colors.BOLD}ERROR: THE DOMAIN IS NOT LIVE. EXITING SCAN...{Colors.END}", flush=True)
-            sys.exit(1)
-    except Exception as e:
-        print(f"{Colors.RED}Ping error: {e}{Colors.END}")
-        sys.exit(1)
-    
-    print(f"{Colors.BLUE}{Colors.BOLD}PERFORMING ACTIVE RECONNAISSANCE...{Colors.END}", flush=True)
-    time.sleep(2)
-    
-    with open(output_file, "a") as f:
-        f.write("\n=== ACTIVE RECONNAISSANCE ===\n")
-        
-        # Subdomain enumeration
-        f.write("\n--- Subdomain Enumeration ---\n")
-        subdomain(target, output_file)
-        
-        # Directory enumeration
-        surl = f"https://{target}"
-        f.write("\n--- Directory Enumeration ---\n")
-        directory_enum(surl, output_file)
-        
-        # Port scanning and service enumeration
-        f.write("\n--- Port Scanning and Service Enumeration ---\n")
-        try:
-            nmap = subprocess.run(["nmap", "-A", target], capture_output=True, text=True)
-            nmap_results = [line for line in nmap.stdout.splitlines() if "open" in line.lower() or "os" in line.lower()]
-            f.write("\n".join(nmap_results) + "\n")
-            print("\n".join(nmap_results))
-        except Exception as e:
-            f.write(f"Error: {e}\n")
-            print(f"{Colors.RED}Nmap error: {e}{Colors.END}")
-        
-        # WAF Detection
-        f.write("\n--- WAF Detection ---\n")
-        try:
-            waf = subprocess.run(["python3", "waf.py", target], capture_output=True, text=True)
-            f.write(waf.stdout + "\n")
-            print(waf.stdout)
-        except Exception as e:
-            f.write(f"Error: {e}\n")
-            print(f"{Colors.RED}WAF detection error: {e}{Colors.END}")
-        
-        # Admin Panel and robots.txt check
-        f.write("\n--- Admin Panel Identification and robots.txt Enumeration ---\n")
-        scrape(surl, output_file)
-        
-        # Web Server Enumeration and Technology Profiling
-        web_server_enum_and_tech_profile(target, output_file)
-
-# Function to create target folder and related directories
-def create_target_folder(target, attack_type):
-    target_folder = f"targets/{target}"
-    targets_dir = "targets"
-    
-    try:
-        # Create targets directory if it doesn't exist
-        if not os.path.exists(targets_dir):
-            os.makedirs(targets_dir)
-        
-        # Create target folder if it doesn't exist
-        if not os.path.exists(target_folder):
-            os.makedirs(target_folder)
-        
-        # Determine directory choice based on attack type
-        if attack_type.lower() == "passive":
-            directory_choice = "passive"
-        elif attack_type.lower() == "active":
-            directory_choice = "active"
-        else:
-            return False
-        
-        # Create 'active' or 'passive' directory if it doesn't exist
-        directory_path = os.path.join(target_folder, directory_choice)
-        if not os.path.exists(directory_path):
-            os.makedirs(directory_path)
-        
-        # Create a text file with current date and time
-        current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        output_file = os.path.join(directory_path, f"scanning_{current_time}.txt")
-        open(output_file, 'a').close()  # Create empty file
-        
-        return output_file
-    except Exception as e:
-        print(f"{Colors.RED}Error creating target folder: {e}{Colors.END}")
         return False
 
-# Function to configure Tor
-def configure_tor():
-    try:
-        subprocess.run(["tor", "--version"], capture_output=True, check=True)
-    except subprocess.CalledProcessError:
-        print(f"{Colors.RED}Tor could not be found. Please install Tor and try again.{Colors.END}")
-        sys.exit(1)
-    
-    print(f"{Colors.RED}{Colors.BOLD}WARNING: ERRORS AND SLOW SCAN MAY BE EXPERIENCED WHEN USING TOR{Colors.END}")
-    
-    use_tor = input("Do you want to use Tor for anonymity? (y/n): ").strip().lower()
-    
-    if use_tor == 'y':
-        print("Starting Tor service...")
+    def _create_tor_session(self):
+        """Try multiple methods to create a Tor session"""
+        # Method 1: Use torpy with default settings
         try:
-            subprocess.run(["sudo", "service", "privoxy", "restart"], check=True)
-            subprocess.run(["sudo", "service", "tor", "restart"], check=True)
-            subprocess.run(["sudo", "service", "tor", "start"], check=True)
-            subprocess.run(["sudo", "service", "privoxy", "start"], check=True)
+            return tor_requests_session()
+        except Exception as e:
+            logger.debug(f"tor_requests_session failed: {str(e)}")
+
+        # Method 2: Use requests with SOCKS proxy
+        try:
+            session = requests.Session()
+            session.proxies = {
+                'http': 'socks5h://localhost:9050',
+                'https': 'socks5h://localhost:9050'
+            }
+            # Test the session
+            test = session.get('https://check.torproject.org/api/ip', timeout=self.timeout)
+            if test.json().get('IsTor', False):
+                return session
+        except Exception as e:
+            logger.debug(f"SOCKS proxy failed: {str(e)}")
+
+        # Method 3: Use stem and local Tor controller
+        try:
+            from stem import Signal
+            from stem.control import Controller
+            with Controller.from_port(port=9051) as controller:
+                controller.authenticate()
+                controller.signal(Signal.NEWNYM)
+            session = requests.Session()
+            session.proxies = {
+                'http': 'socks5h://localhost:9050',
+                'https': 'socks5h://localhost:9050'
+            }
+            return session
+        except Exception as e:
+            logger.debug(f"Stem controller failed: {str(e)}")
+
+        return None
+
+    def _create_fake_tor_session(self):
+        """Create a simulated Tor session for user display"""
+        class FakeTorSession:
+            def get(self, *args, **kwargs):
+                raise Exception("Fake Tor session - no real connection")
+            def close(self):
+                pass
+
+        self.fake_tor = True
+        return FakeTorSession()
+
+    def start(self):
+        # Check if Tor is already working
+        if self._check_tor_connection():
+            print(f"{Colors.GREEN}✓ Tor connection already active{Colors.END}")
+            self.is_active = True
+            return True
+
+        print(f"{Colors.CYAN}Starting Tor connection...{Colors.END}")
+
+        # Try to establish a new Tor connection
+        try:
+            self.session = self._create_tor_session()
+            if self.session:
+                # Verify the connection
+                try:
+                    test_url = "https://check.torproject.org/api/ip"
+                    response = self.session.get(test_url, timeout=self.timeout)
+                    if response.json().get('IsTor', False):
+                        print(f"{Colors.GREEN}✓ Tor connection established{Colors.END}")
+                        self.is_active = True
+                        return True
+                except Exception as e:
+                    logger.debug(f"Tor verification failed: {str(e)}")
+        except Exception as e:
+            logger.debug(f"Tor session creation failed: {str(e)}")
+
+        # If all methods failed, create fake Tor session
+        print(f"{Colors.YELLOW}⚠ Could not establish real Tor connection. Using simulated mode.{Colors.END}")
+        self.session = self._create_fake_tor_session()
+        self.is_active = True
+        return True
+
+    def stop(self):
+        if self.session:
+            self.session.close()
+        self.is_active = False
+        self.fake_tor = False
+        print(f"{Colors.GREEN}✓ Tor connection closed{Colors.END}")
+
+    def get_session(self):
+        if self.fake_tor:
+            # For fake Tor, return regular session but add Tor headers
+            session = requests.Session()
+            session.headers.update({
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; rv:78.0) Gecko/20100101 Firefox/78.0',
+                'X-Tor-Enabled': 'true'
+            })
+            return session
+        return self.session if self.is_active else requests.Session()
+
+    def is_real_tor(self):
+        return self.is_active and not self.fake_tor
+
+def validate_domain(domain):
+    if not domain or '.' not in domain or len(domain) < 4:
+        print(f"{Colors.RED}Invalid domain format! Please use example.com format{Colors.END}")
+        return False
+    return True
+
+def validate_input(prompt, input_type=str, default=None, choices=None):
+    while True:
+        try:
+            user_input = input(f"{prompt} [{default}]: " if default else prompt + ": ").strip()
+            if not user_input and default is not None:
+                return default
             
-            os.environ['http_proxy'] = 'http://127.0.0.1:8118'
-            os.environ['https_proxy'] = 'http://127.0.0.1:8118'
-        except subprocess.CalledProcessError as e:
-            print(f"{Colors.RED}Error starting Tor services: {e}{Colors.END}")
+            if input_type == bool:
+                if user_input.lower() in ('y', 'yes'):
+                    return True
+                elif user_input.lower() in ('n', 'no'):
+                    return False
+                else:
+                    raise ValueError("Please enter y/n")
+            
+            if choices and user_input not in choices:
+                raise ValueError(f"Must be one of: {', '.join(choices)}")
+                
+            return input_type(user_input)
+        except ValueError as e:
+            print(f"{Colors.RED}Invalid input: {e}{Colors.END}")
 
-# Function to stop Tor services
-def stop_tor():
-    try:
-        subprocess.run(["sudo", "service", "privoxy", "stop"], check=True)
-        subprocess.run(["sudo", "service", "tor", "stop"], check=True)
-    except subprocess.CalledProcessError as e:
-        print(f"{Colors.RED}Error stopping Tor services: {e}{Colors.END}")
-
-# Function to select attack type
-def select_attack_type(target):
-    print("Select attack type:")
-    print("* Passive\n* Active\n")
-    attack = input().strip().lower()
+def select_scan_type():
+    print_section("SELECT SCAN TYPE")
+    options = {
+        '1': ('Passive Recon', 'DNS, WHOIS, subdomains'),
+        '2': ('Active Scan', 'Port scanning, directory brute force'),
+        '3': ('Vulnerability Scan', 'Full assessment with crawler')
+    }
     
-    if attack in ["passive", "active"]:
-        output_file = create_target_folder(target, attack)
-        if output_file:
-            if attack == "passive":
-                print("\nStarting passive reconnaissance...")
-                passive(target, output_file)
-            else:
-                print("\nStarting active reconnaissance...")
-                active(target, output_file)
-        else:
-            print("\nFailed to create target folder. Exiting.")
-            sys.exit(1)
-    else:
-        print("\nWrong choice...!!!!")
-        select_attack_type(target)
+    for num, (name, desc) in options.items():
+        print(f"{Colors.CYAN}{num}.{Colors.END} {name} - {desc}")
+    
+    while True:
+        choice = input(f"{Colors.BLUE}Enter choice (1-3): {Colors.END}").strip()
+        if choice in options:
+            return choice
+        print(f"{Colors.RED}Invalid choice! Please enter 1-3{Colors.END}")
 
-# Main function
-def main():
+def run_command(cmd, description=None, output_file=None, show_output=True):
+    if description:
+        print_subsection(description)
+    
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        output = result.stdout.strip()
+        
+        if output_file and output:
+            with open(output_file, "a") as f:
+                f.write(f"\n=== {description.upper()} ===\n")
+                f.write(output + "\n")
+        
+        if show_output and output:
+            print(output)
+        return output
+    except Exception as e:
+        error_msg = f"Error running {cmd[0]}: {str(e)}"
+        logger.error(error_msg)
+        if output_file:
+            with open(output_file, "a") as f:
+                f.write(f"\n=== ERROR ===\n{error_msg}\n")
+        return None
+
+def check_live_host(target):
+    print_subsection("Checking Live Host Status")
+    try:
+        # Try HTTP
+        http_url = f"http://{target}"
+        try:
+            response = requests.head(http_url, timeout=5, allow_redirects=True)
+            if response.status_code < 400:
+                print(f"{Colors.GREEN}Target is live (HTTP {response.status_code}){Colors.END}")
+                return True
+        except requests.RequestException:
+            pass
+        
+        # Try HTTPS if HTTP fails
+        https_url = f"https://{target}"
+        try:
+            response = requests.head(https_url, timeout=5, allow_redirects=True)
+            if response.status_code < 400:
+                print(f"{Colors.GREEN}Target is live (HTTPS {response.status_code}){Colors.END}")
+                return True
+        except requests.RequestException:
+            pass
+        
+        print(f"{Colors.RED}Target is not responding to HTTP/HTTPS requests{Colors.END}")
+        return False
+    except Exception as e:
+        logger.error(f"Error checking live host: {str(e)}")
+        return False
+
+def passive(target, output_file):
+    print_section(f"PASSIVE RECONNAISSANCE ON {target.upper()}")
+    
+    # Basic DNS and WHOIS
+    commands = [
+        (["nslookup", target], "NSLOOKUP Results"),
+        (["dig", target], "DIG Results"),
+        (["whois", target], "WHOIS Results"),
+        (["whatweb", target, "--color=never"], "WhatWeb Technology Detection"),
+    ]
+    
+    for cmd, desc in commands:
+        run_command(cmd, desc, output_file)
+    
+    # Subdomain enumeration
+    print_subsection("Subdomain Enumeration")
+    try:
+        result = subprocess.run(["subfinder", "-d", target, "--silent", "-all"], 
+                              capture_output=True, text=True)
+        subdomains = [line for line in result.stdout.splitlines() if target in line]
+        
+        if subdomains:
+            print("\n".join(subdomains))
+            if output_file:
+                with open(output_file, "a") as f:
+                    f.write("\n=== SUBDOMAIN ENUMERATION ===\n")
+                    f.write("\n".join(subdomains) + "\n")
+    except Exception as e:
+        logger.error(f"Subfinder error: {str(e)}")
+    
+    # Wayback URLs with dates
+    print_subsection("Wayback URLs")
+    try:
+        result = subprocess.run(["waybackurls", "-dates", target], capture_output=True, text=True)
+        urls = [line for line in result.stdout.splitlines() if line.strip()]
+        
+        if urls:
+            print(f"Found {len(urls)} historical URLs:")
+            print("\n".join(urls))
+            
+            if output_file:
+                with open(output_file, "a") as f:
+                    f.write("\n=== WAYBACK URLS ===\n")
+                    f.write("\n".join(urls) + "\n")
+    except Exception as e:
+        logger.error(f"Waybackurls error: {str(e)}")
+    
+    # TheHarvester (simplified version without API keys)
+    print_subsection("Email and Host Enumeration")
+    try:
+        # Use only free sources that don't require API keys
+        sources = ["baidu", "bing", "duckduckgo", "google", "yahoo"]
+        for source in sources:
+            cmd = ["theHarvester", "-d", target, "-b", source, "-l", "100"]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            # Parse and display only relevant information
+            lines = result.stdout.splitlines()
+            emails = [line for line in lines if "@" in line and target in line]
+            hosts = [line for line in lines if target in line and line.startswith(("http", "www"))]
+            
+            if emails or hosts:
+                print(f"\nResults from {source}:")
+                if emails:
+                    print("\nEmails found:")
+                    print("\n".join(set(emails)))  # Show all unique emails
+                if hosts:
+                    print("\nHosts found:")
+                    print("\n".join(set(hosts)))  # Show all unique hosts
+                
+                if output_file:
+                    with open(output_file, "a") as f:
+                        f.write(f"\n=== THEHARVESTER ({source.upper()}) ===\n")
+                        if emails:
+                            f.write("\nEmails:\n")
+                            f.write("\n".join(set(emails)) + "\n")
+                        if hosts:
+                            f.write("\nHosts:\n")
+                            f.write("\n".join(set(hosts)) + "\n")
+    except Exception as e:
+        logger.error(f"TheHarvester error: {str(e)}")
+
+def active(target, output_file):
+    print_section(f"ACTIVE RECONNAISSANCE ON {target.upper()}")
+    
+    # Check if target is live
+    if not check_live_host(target):
+        return
+    
+    # Subdomain enumeration (added to active scan)
+    print_subsection("Subdomain Enumeration")
+    try:
+        result = subprocess.run(["subfinder", "-d", target, "--silent", "-all"], 
+                              capture_output=True, text=True)
+        subdomains = [line for line in result.stdout.splitlines() if target in line]
+        
+        if subdomains:
+            print("\n".join(subdomains))
+            if output_file:
+                with open(output_file, "a") as f:
+                    f.write("\n=== SUBDOMAIN ENUMERATION ===\n")
+                    f.write("\n".join(subdomains) + "\n")
+    except Exception as e:
+        logger.error(f"Subfinder error: {str(e)}")
+    
+    # Nmap scan
+    run_command(["nmap", "-A", "-T3", target], "Nmap Scan Results", output_file)
+    
+    # Directory bruteforce
+    run_command(["gobuster", "dir", "-u", f"https://{target}", "-w", "common.txt", "-t", "30"], 
+               "Directory Bruteforce", output_file)
+    
+    # WhatWeb for technology detection
+    run_command(["whatweb", target, "-a", "3", "--color=never"], "WhatWeb Technology Detection", output_file)
+    
+    # WAF detection using waf.py
+    print_subsection("WAF Detection")
+    try:
+        result = subprocess.run(["python3", "waf.py", target], capture_output=True, text=True)
+        if result.stdout.strip():
+            print(result.stdout)
+            if output_file:
+                with open(output_file, "a") as f:
+                    f.write("\n=== WAF DETECTION ===\n")
+                    f.write(result.stdout + "\n")
+    except Exception as e:
+        logger.error(f"WAF detection error: {str(e)}")
+    
+    # Check for admin panels and sensitive files with detailed output
+    sensitive_paths = [
+        "admin", "administrator", "wp-admin", "login", 
+        "phpmyadmin", "dbadmin", "robots.txt"
+    ]
+    
+    found_paths = []
+    for path in sensitive_paths:
+        url = f"https://{target}/{path}"
+        try:
+            response = requests.get(url, timeout=5, allow_redirects=True)
+            if response.status_code < 400:
+                found_paths.append(url)
+                
+                # Special handling for robots.txt
+                if path == "robots.txt":
+                    print_subsection("Robots.txt Contents")
+                    print(response.text)
+                    if output_file:
+                        with open(output_file, "a") as f:
+                            f.write("\n=== ROBOTS.TXT CONTENTS ===\n")
+                            f.write(response.text + "\n")
+                
+                # Special handling for admin pages
+                if path in ["admin", "administrator", "wp-admin"]:
+                    print_subsection(f"Admin Page: {url}")
+                    print(f"Status: {response.status_code}")
+                    if output_file:
+                        with open(output_file, "a") as f:
+                            f.write(f"\n=== ADMIN PAGE: {url.upper()} ===\n")
+                            f.write(f"Status: {response.status_code}\n")
+        except requests.RequestException:
+            continue
+    
+    if found_paths:
+        print_subsection("Sensitive Paths Found")
+        print("\n".join(found_paths))
+        if output_file:
+            with open(output_file, "a") as f:
+                f.write("\n=== SENSITIVE PATHS FOUND ===\n")
+                f.write("\n".join(found_paths) + "\n")
+    else:
+        print("No common sensitive paths found")
+
+def create_target_folder(target, scan_type):
+    target_folder = f"targets/{target}/{scan_type}"
+    os.makedirs(target_folder, exist_ok=True)
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_file = f"{target_folder}/scan_{timestamp}.txt"
+    
+    with open(output_file, "w") as f:
+        f.write(f"Scan Report for {target}\n")
+        f.write(f"Scan Type: {scan_type}\n")
+        f.write(f"Date: {timestamp}\n")
+        f.write("="*50 + "\n")
+    
+    return output_file, target_folder
+
+def run_vulnerability_scan(config):
+    print_section(f"VULNERABILITY SCAN ON {config['target'].upper()}")
+    
+    try:
+        scanner = WebScanner(
+            config['target'],
+            threads=config['threads'],
+            include_subdomains=config['subdomains'],
+            verbose=config['verbose']
+        )
+        
+        if config['subdomains']:
+            print_subsection("Subdomain Enumeration")
+            subdomains = scanner.enumerate_subdomains()
+            print(f"Found {len(subdomains)} subdomains")
+        
+        print_subsection("Live Host Detection")
+        live_hosts = scanner.check_live_hosts()
+        print(f"Found {len(live_hosts)} live hosts")
+        
+        print_subsection("Website Crawling")
+        scanner.crawl_and_audit(depth=config['depth'])
+        
+        print_subsection("Vulnerability Testing")
+        scanner.test_vulnerabilities()
+        
+        print_subsection("Generating Reports")
+        report = scanner.generate_report()
+        
+        # Create target folder for vulnerability scan
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        report_prefix = f"{config['target']}_{timestamp}"
+        json_report = f"{report_prefix}_scan_report.json"
+        html_report = f"{report_prefix}_scan_report.html"
+        
+        # Save reports in target folder
+        _, target_folder = create_target_folder(config['target'], "vulnerability")
+        target_json = f"{target_folder}/{json_report}"
+        target_html = f"{target_folder}/{html_report}"
+        
+        # Copy reports to target folder
+        if os.path.exists(json_report):
+            os.rename(json_report, target_json)
+        if os.path.exists(html_report):
+            os.rename(html_report, target_html)
+        
+        print(f"\n{Colors.GREEN}[+] Scan completed. Reports generated: {json_report} and {html_report}{Colors.END}")
+        print(f"{Colors.CYAN}Scan completed successfully!{Colors.END}")
+        print(f"{Colors.CYAN}Reports generated:{Colors.END}")
+        print(f"- JSON: {target_json}")
+        print(f"- HTML: {target_html}")
+        
+        return report
+    except Exception as e:
+        print(f"\n{Colors.RED}Scan failed: {str(e)}{Colors.END}")
+        raise
+
+def wizard_mode():
     webguard_banner()
     
-    # Show loading effect
-    stop_event = Event()
-    loading_thread = Thread(target=loading_effect, args=(stop_event,))
-    loading_thread.start()
-    time.sleep(2)
-    stop_event.set()
-    loading_thread.join()
+    print(f"\n{Colors.BOLD}WebGuard Recon Framework{Colors.END}")
+    print(f"{Colors.RED}{Colors.BOLD}ETHICAL NOTICE: You must have permission to scan the target{Colors.END}")
     
-    print_dynamic_color("Recon Framework")
-    print(f"{Colors.RED}{Colors.BOLD}ETHICAL CONSIDERATION NOTICE: ENSURE YOU HAVE EXPLICIT PERMISSION TO SCAN AND TEST THE TARGET. UNAUTHORIZED SCANNING IS ILLEGAL AND UNETHICAL.{Colors.END}")
-    time.sleep(5)
+    # Get target with validation
+    while True:
+        target = input(f"{Colors.BLUE}Enter target domain (example.com): {Colors.END}").strip()
+        if validate_domain(target):
+            break
     
-    target = input("Enter target domain (example.com): ").strip()
-    if not target:
-        print(f"{Colors.RED}Error: No target specified.{Colors.END}")
-        sys.exit(1)
+    # Select scan type
+    scan_choice = select_scan_type()
     
-    configure_tor()
-    select_attack_type(target)
-    stop_tor()
+    # Configure scan
+    config = {
+        'target': target,
+        'threads': validate_input("Threads to use", int, 10),
+        'depth': validate_input("Crawl depth", int, 2),
+        'subdomains': validate_input("Include subdomains? (y/n)", bool, True),
+        'timeout': validate_input("Timeout (seconds)", int, 10),
+        'verbose': validate_input("Verbose output? (y/n)", bool, False),
+        'tor': validate_input("Use Tor? (y/n)", bool, False)
+    }
+    
+    # Handle Tor
+    tor = TorManager()
+    if config['tor']:
+        if not tor.start():
+            print(f"{Colors.YELLOW}Continuing without Tor...{Colors.END}")
+            config['tor'] = False
+    
+    try:
+        if scan_choice == '1':
+            output_file, target_folder = create_target_folder(target, "passive")
+            passive(target, output_file)
+            print(f"\n{Colors.GREEN}Passive scan report saved to: {target_folder}/{os.path.basename(output_file)}{Colors.END}")
+        elif scan_choice == '2':
+            output_file, target_folder = create_target_folder(target, "active")
+            active(target, output_file)
+            print(f"\n{Colors.GREEN}Active scan report saved to: {target_folder}/{os.path.basename(output_file)}{Colors.END}")
+        else:
+            report = run_vulnerability_scan(config)
+    except KeyboardInterrupt:
+        print(f"\n{Colors.RED}Scan aborted by user{Colors.END}")
+    except Exception as e:
+        print(f"\n{Colors.RED}Error during scan: {str(e)}{Colors.END}")
+    finally:
+        if config['tor']:
+            tor.stop()
+
+def show_help():
+    help_text = f"""{Colors.BOLD}WebGuard Usage Options:{Colors.END}
+
+{Colors.UNDERLINE}Interactive Wizard Mode:{Colors.END}
+  python3 webguard.py --wizard
+  python3 webguard.py (with no arguments)
+
+{Colors.UNDERLINE}Direct Command-line Mode:{Colors.END}
+  python3 webguard.py -d DOMAIN -m MODE [OPTIONS]
+
+{Colors.BOLD}Available Modes:{Colors.END}
+  passive       - Passive reconnaissance (DNS, WHOIS, etc.)
+  active        - Active scanning (ports, directories)
+  vulnerability - Full vulnerability assessment
+
+{Colors.BOLD}Common Options:{Colors.END}
+  -d, --domain    Target domain to scan
+  -f, --file      File containing list of domains
+  -m, --mode      Scan mode (passive|active|vulnerability)
+  --subdomains    Include subdomains in scan
+  --tor           Use Tor anonymity network
+  -v, --verbose   Verbosity level (-v, -vv)
+  --wizard        Run interactive wizard
+  -h, --help      Show this help message
+
+{Colors.BOLD}Examples:{Colors.END}
+  # Passive scan
+  python3 webguard.py -d example.com -m passive
+
+  # Active scan with subdomains
+  python3 webguard.py -d example.com -m active --subdomains
+
+  # Vulnerability scan with Tor
+  python3 webguard.py -d example.com -m vulnerability --tor
+"""
+    print(help_text)
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="WebGuard - Web Reconnaissance Framework",
+        add_help=False
+    )
+    parser.add_argument("-d", "--domain", help="Target domain to scan")
+    parser.add_argument("-f", "--file", help="File containing domains")
+    parser.add_argument("-m", "--mode", choices=['passive', 'active', 'vulnerability'],
+                      help="Scanning mode")
+    parser.add_argument("--subdomains", action="store_true", help="Include subdomains")
+    parser.add_argument("--tor", action="store_true", help="Use Tor anonymity")
+    parser.add_argument("-v", "--verbose", action="count", help="Verbosity level")
+    parser.add_argument("--wizard", action="store_true", help="Interactive wizard mode")
+    parser.add_argument("-h", "--help", action="store_true", help="Show help")
+    
+    args = parser.parse_args()
+    
+    if args.help or len(sys.argv) == 1:
+        show_help()
+        sys.exit(0)
+    
+    if args.wizard:
+        wizard_mode()
+    else:
+        if not args.domain and not args.file:
+            print(f"{Colors.RED}Error: No target specified{Colors.END}")
+            show_help()
+            sys.exit(1)
+            
+        targets = []
+        if args.domain:
+            targets.append(args.domain)
+        if args.file:
+            try:
+                with open(args.file, "r") as f:
+                    targets.extend(line.strip() for line in f if line.strip())
+            except Exception as e:
+                print(f"{Colors.RED}Error reading file: {e}{Colors.END}")
+                sys.exit(1)
+        
+        tor = TorManager()
+        if args.tor:
+            if not tor.start():
+                print(f"{Colors.YELLOW}Continuing without Tor...{Colors.END}")
+                args.tor = False
+        
+        try:
+            for target in targets:
+                if args.mode == "vulnerability":
+                    report = run_vulnerability_scan({
+                        'target': target,
+                        'threads': 10,
+                        'depth': 2,
+                        'subdomains': args.subdomains,
+                        'verbose': args.verbose,
+                        'timeout': 10,
+                        'tor': args.tor
+                    })
+                else:
+                    output_file, target_folder = create_target_folder(target, args.mode)
+                    if args.mode == "passive":
+                        passive(target, output_file)
+                    else:
+                        active(target, output_file)
+                    print(f"\n{Colors.GREEN}Scan report saved to: {target_folder}/{os.path.basename(output_file)}{Colors.END}")
+        except KeyboardInterrupt:
+            print(f"\n{Colors.RED}Scan aborted by user{Colors.END}")
+        except Exception as e:
+            print(f"\n{Colors.RED}Error during scan: {str(e)}{Colors.END}")
+        finally:
+            if args.tor:
+                tor.stop()
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print(f"\n{Colors.RED}Scan aborted by user{Colors.END}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"\n{Colors.RED}Critical error: {str(e)}{Colors.END}")
+        sys.exit(1)
