@@ -36,8 +36,14 @@ def test_cli_scan_end_to_end(tmp_path, capsys):
                          "--model", str(tmp_path / "m.json"), "-o", str(out), "-f", "json,html,sarif,md",
                          "--checks", "xss,sqli,exposure,headers"])
     assert code == 2  # HIGH findings -> non-zero exit for CI gating
-    files = {p.suffix for p in out.iterdir()}
+    files = {p.suffix for p in out.iterdir() if p.is_file()}
     assert files == {".json", ".html", ".sarif", ".md"}
+    try:
+        import playwright  # noqa: F401
+        assert list((out / "poc").glob("*.png"))  # PoC screenshots next to the reports
+        assert "data:image/png;base64," in next(out.glob("*.html")).read_text()
+    except ImportError:
+        pass
     report = json.loads(next(out.glob("*.json")).read_text())
     assert report["summary"]["HIGH"] >= 3
     db = Database(db_path)

@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import re
 
 from webguard.config import DATA_DIR
 from webguard.detection import anomaly
 from webguard.detection.baseline import features, similarity
 from webguard.detection.context import Context, token
 from webguard.models import ANOMALY, Confidence, Finding, InjectionPoint, Severity
+
+VALIDATION = re.compile(r"(?i)invalid|not allowed|illegal|must be|is required|validation|malformed|bad request|"
+                        r"unexpected (?:value|character)|out of range|not a valid|unsupported")
 
 
 async def anomaly_fuzz(ctx: Context, point: InjectionPoint) -> None:
@@ -30,6 +34,8 @@ async def anomaly_fuzz(ctx: Context, point: InjectionPoint) -> None:
     for name, payload in anomaly.PROBES:
         value = point.original + payload
         r = await ctx.send(point, value)
+        if r is not None and 400 <= r.status < 500 and VALIDATION.search(r.text[:5000]):
+            continue  # the app cleanly rejected the input: correct validation, not an anomaly
         if r is not None and ctx.app_answered(r, point, "anomaly"):  # blocked probes are not app behaviour
             probe_vecs.append((name, value, features(r, base.primary, [value])))
             statuses[name] = r.status

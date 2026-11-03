@@ -40,6 +40,7 @@ class ScanConfig:
     param_discovery: bool = False
     oob_domain: str | None = None  # interactsh/collaborator domain for blind SSRF
     tamper: tuple[str, ...] = ()
+    auto_tamper: bool = True  # sqlmap-style tamper chains when an *application* input filter blocks basics
     wordlist: Path = DATA_DIR / "wordlists" / "common.txt"  # ffuf / large brute force
     discovery_wordlist: Path | None = DATA_DIR / "wordlists" / "quick.txt"  # built-in content discovery (None = off)
     db_path: Path = DEFAULT_DB

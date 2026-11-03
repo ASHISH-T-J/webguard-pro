@@ -159,6 +159,16 @@ payload obfuscation, CDN challenge solving, fingerprint spoofing, IP rotation or
 assessments behind a WAF, ask the owner to allow-list your source IP or provide an origin/staging
 endpoint, which is the standard practice in authorised engagements and tests the application itself.
 
+### Automatic tamper chains (application input filters)
+
+When the basic SQL injection tests fail **and the application itself** reacts like an input blacklist
+(HTTP 400/422 or "invalid characters"-style messages from the app), the SQLi check re-runs its error- and
+boolean-based tests through sqlmap-style tamper chains: `space2comment`, `randomcase`, `space2tab`,
+`space2newline`, `equaltolike`, `symboliclogical`, `versioned`, `between`, `charencode`. A hit is reported
+as e.g. *"SQL injection (boolean-based blind) - input filter bypassed with tamper space2comment"* because a
+defeatable blacklist is itself the vulnerability. Tamper chains are never used when a WAF / CDN challenge
+/ rate limiter answered (those inputs stay NOT TESTED, see WAF policy). Use `--tamper a,b` to force a chain.
+
 ### Resilience
 
 Per-host adaptive rate control (AIMD: halve on 429/503/timeouts, recover gradually), `Retry-After`
@@ -173,6 +183,20 @@ kinds (DNS, TLS, refused, timeouts, resets, protocol) and every rate adjustment 
 | `safe` | production | ≤ 5 req/s, 5 concurrent, no time-based payloads, no anomaly fuzzing |
 | `standard` (default) | most engagements | balanced |
 | `thorough` | lab / staging | hidden-parameter discovery, full 4.6k-path content discovery |
+
+### PoC screenshots
+
+After a scan, WebGuard captures evidence for every MEDIUM+ finding in headless Chromium (scope-locked:
+every request and **every redirect hop** is checked; background browser traffic is disabled):
+
+| Kind | When | What the image shows |
+|---|---|---|
+| `browser-execution` | reflected XSS, DOM XSS, prototype pollution | the page after loading an executing PoC (`alert(document.domain)` adapted to the confirmed context); the red banner is added only if execution was actually observed |
+| `live-response` | GET-reproducible server-side findings (SQL errors, file reads, SSTI, command output, exposures) | the real response with the evidence string highlighted |
+| `http-evidence` | POST/JSON/header-based findings | the exact HTTP request/response pair (the recorded non-destructive request is replayed if needed) |
+
+Images are embedded in the HTML report, linked from the Markdown submissions and saved under
+`<output>/poc/`. Disable with `--no-screenshots`.
 
 ---
 
@@ -235,8 +259,10 @@ takeover*, *cracked JWT secret → privilege escalation*, *exposed MD5 hashes �
 ## Bug bounty and red-team workflows
 
 ```bash
-# Bug bounty: recon → rank assets → assess top hosts → nuclei → ML triage → submission drafts
-webguard hunt example.com --scope program.yml -H "X-Bug-Bounty: yourhandle" --content-discovery
+# Bug bounty: recon → rank assets → active scan of the top subdomains in parallel → nuclei → ML triage
+# → PoC screenshots → submission drafts. The --rate budget is split across the parallel hosts.
+webguard hunt example.com --scope program.yml -H "X-Bug-Bounty: yourhandle" --content-discovery \
+    --parallel-hosts 4 --rate 20
 
 # Continuous monitoring: run on a schedule, look only at what's new
 webguard db new example.com
@@ -287,7 +313,7 @@ vulnerabilities reachable without an account in classes WebGuard tests (see
 
 | Run | Ground truth found | Requests | Time | MEDIUM+ findings outside ground truth |
 |---|---|---|---|---|
-| `assess`, no budget | **15 / 15** | 5,197 | 224 s | 0 |
+| `assess`, no budget | **15 / 15** | 5,248 | 239 s | 0 |
 | `assess --budget-requests 2000` | 13 / 15 | 2,029 | 181 s | 0 |
 | `assess --budget-requests 1000` | 12 / 15 (all critical/high found) | 1,141 | 161 s | 0 |
 | v2 scanner (before the agent) | 3 / 15 (metrics, headers, the leaked hashes - reported as 5 separate "generic password" secrets); only 3 injectable inputs mapped | 440 | 11 s | 0 |
@@ -340,7 +366,7 @@ diminishing returns for repeated test types - all visible in the reasoning trace
 | `webguard assess <url>` | Autonomous methodology-driven assessment (`--llm`, `--budget-*`, `--show-trace`, `--no-browser`) |
 | `webguard scan <url>...` | Exhaustive scan with the same engine (`-l targets.txt`) |
 | `webguard recon <domain>` | Subdomains, DNS, live hosts, takeover, historical URLs (`--passive`) |
-| `webguard hunt <domain>` | Bug bounty pipeline (`--max-hosts`, `--content-discovery`, `--no-nuclei`) |
+| `webguard hunt <domain>` | Bug bounty pipeline: active scan of subdomains in parallel (`--parallel-hosts`, `--max-hosts`, `--content-discovery`, `--no-nuclei`) |
 | `webguard surface <domain>` | Red-team external attack surface + ATT&CK mapping |
 | `webguard grep <scan-id>` | Pattern packs / regex over stored responses |
 | `webguard ask "<question>"` | Natural-language query over findings (`--llm claude` for free-form answers) |
@@ -353,7 +379,8 @@ diminishing returns for repeated test types - all visible in the reasoning trace
 
 Common options: `--profile safe|standard|thorough`, `--scope`, `--subdomains`, `-H`, `--cookie`, `--proxy`, `--rate`, `-c`, `--timeout`,
 `--depth`, `--max-urls`, `--checks`/`--skip`, `--no-timing`, `--time-delay`, `--param-discovery`,
-`--oob`, `--tamper`, `--signatures`, `--wordlist`, `--no-discovery`, `-o`, `-f`, `--db`, `--model`, `-v`.
+`--oob`, `--tamper`, `--signatures`, `--wordlist`, `--no-discovery`, `--no-screenshots`, `-o`, `-f`, `--db`,
+`--model`, `-v`.
 
 Legacy entry points `python3 webguard.py -d example.com -m passive|active|vulnerability` and
 `python3 scanner.py -d …` still work (translated to the commands above).
@@ -395,7 +422,7 @@ Extend detection without code: drop JSON files into a directory and pass `--sign
 
 ```bash
 pip install -e ".[all,dev]"
-pytest -q                       # 123 tests: e2e detection + safe twins, resilience, context, agent, budget, NLP, reasoners, CLI
+pytest -q                       # 128 tests: e2e detection + safe twins, resilience, context, agent, budget, NLP, reasoners, CLI
 ruff check webguard tests
 python tests/vulnapp.py         # run the vulnerable test app locally
 python benchmarks/juice_shop.py # benchmark against a running Juice Shop

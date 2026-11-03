@@ -65,6 +65,7 @@ def _common(p: argparse.ArgumentParser) -> None:
     g = p.add_argument_group("output")
     g.add_argument("-o", "--output", default="reports", help="report directory (default ./reports)")
     g.add_argument("-f", "--format", default="json,html,md", help=f"report formats: {','.join(FORMATS)}")
+    g.add_argument("--no-screenshots", action="store_true", help="skip PoC screenshots (headless Chromium)")
     g.add_argument("--db", default=str(DEFAULT_DB), help=f"SQLite database (default {DEFAULT_DB})")
     g.add_argument("--model", default=str(DEFAULT_MODEL), help="ML triage model path")
     g.add_argument("-v", "--verbose", action="count", default=0)
@@ -90,6 +91,8 @@ def build_parser() -> argparse.ArgumentParser:
     h = sub.add_parser("hunt", help="bug bounty pipeline: recon -> rank -> scan -> nuclei -> triage -> reports")
     h.add_argument("domain")
     h.add_argument("--max-hosts", type=int, default=25)
+    h.add_argument("--parallel-hosts", type=int, default=4,
+                   help="hosts scanned concurrently (the --rate budget is split between them)")
     h.add_argument("--no-nuclei", action="store_true")
     h.add_argument("--no-tools", action="store_true")
     h.add_argument("--content-discovery", action="store_true", help="brute-force paths with ffuf (if installed)")
@@ -243,6 +246,7 @@ async def cmd_scan(args: argparse.Namespace) -> int:
         engine = ScanEngine(cfg, scope, sigdb, on_finding=ui.print_finding, on_status=ui.status)
         scan_id = db.start_scan(target, "scan")
         res = await engine.scan(target)
+        await _screenshots(args, cfg, scope, res.findings)
         new = _persist(db, scan_id, target, res)
         paths = write_all(target, res.findings, Path(args.output), _formats(args.format), {"scan_id": scan_id, **res.meta()})
         _summary(res.findings, new, res.stats, paths, scan_id)
@@ -251,6 +255,18 @@ async def cmd_scan(args: argparse.Namespace) -> int:
         if res.findings:
             worst = max(worst, max(f.severity for f in res.findings))
     return 2 if worst >= Severity.HIGH else 0
+
+
+async def _screenshots(args, cfg: ScanConfig, scope: Scope, findings: list) -> None:
+    if getattr(args, "no_screenshots", False):
+        return
+    from webguard.reporting import poc
+
+    if not poc.HAVE_PLAYWRIGHT:  # HTTP evidence is still collected; only the images need a browser
+        ui.warn("PoC screenshots skipped: pip install playwright (and a Chromium) to enable them")
+    ui.status("Collecting PoC evidence and screenshots")
+    n = await poc.capture(findings, cfg, scope, Path(args.output))
+    ui.status(f"  {n} screenshot(s) saved under {Path(args.output) / 'poc'}")
 
 
 def _persist(db: Database, scan_id: int, target: str, res) -> list:
@@ -303,6 +319,7 @@ async def cmd_assess(args: argparse.Namespace) -> int:
                             on_status=ui.status, on_trace=_print_trace if args.show_trace else None,
                             budget_requests=args.budget_requests, budget_minutes=args.budget_minutes)
     res = await agent.run(args.target)
+    await _screenshots(args, cfg, scope, res.findings)
     new = _persist(db, scan_id, args.target, res)
     paths = write_all(args.target, res.findings, Path(args.output), _formats(args.format), {"scan_id": scan_id, **res.meta()})
     print(ui.c("\nExecutive summary", "bold"))
@@ -446,7 +463,8 @@ async def cmd_hunt(args: argparse.Namespace) -> int:
     db = Database(cfg.db_path)
     res = await hunt(args.domain, cfg, scope, db, Path(args.output), _formats(args.format), max_hosts=args.max_hosts,
                      use_nuclei=not args.no_nuclei, use_tools=not args.no_tools,
-                     content_discovery=args.content_discovery, on_finding=ui.print_finding,
+                     content_discovery=args.content_discovery, parallel_hosts=args.parallel_hosts,
+                     screenshots=not args.no_screenshots, on_finding=ui.print_finding,
                      status=ui.status)
     print(ui.c("\nTop targets by attack-surface score:", "bold"))
     for r in res.ranking[:10]:

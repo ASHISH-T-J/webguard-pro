@@ -54,6 +54,7 @@ def _found(result, base, check, path, param=None):
     ("jwt", "/", None),                       # HS256 token signed with "secret"
     ("access", "/api/admin/config", None),    # admin API answering anonymous requests
     ("sqli", "/track", "User-Agent"),         # header value logged into SQL
+    ("sqli", "/filtered/item", "id"),         # app blacklist (spaces/quotes) defeated by auto-tamper
     ("xss", "/welcome", "Referer"),           # header value rendered into HTML
     ("xss", "/welcome", "theme"),             # cookie value rendered into an attribute
     ("exposure", "/static/legacy.js.map", None),  # source map exposed
@@ -75,7 +76,7 @@ def test_detects_vulnerability(scan_result, check, path, param):
                                   "/safe/api/login", "/safe/users/search", "/safe/api/xml", "/safe/admin",
                                   "/safe/reset", "/safe/api/users/1", "/safe/dom", "/safe/api/admin/config",
                                   "/safe/track", "/safe/welcome", "/safe/app",
-                                  "/safe/account", "/safe/oauth/authorize", "/safe/pp"])
+                                  "/safe/account", "/safe/oauth/authorize", "/safe/pp", "/safe/filtered/item"])
 def test_no_false_positives_on_safe_twins(scan_result, path):
     base, result = scan_result
     hits = [f for f in result.findings if f.url.replace(base, "") == path]
@@ -147,9 +148,39 @@ def test_waf_blocked_inputs_reported_as_not_tested(scan_result):
 
 
 def test_findings_carry_context_and_http_evidence(scan_result):
-    _, result = scan_result
-    sqli = next(f for f in result.findings if f.check == "sqli" and f.url.endswith("/item"))
+    base, result = scan_result
+    sqli = next(f for f in result.findings if f.check == "sqli" and f.url == base + "/item")
     assert sqli.context["verification"].startswith("verified")
     assert sqli.context["http_request"].startswith("GET /item?id=")
     assert "SQL syntax" in sqli.context["http_response"]
     assert all(f.context.get("environment") == "development" for f in result.findings)  # 127.0.0.1
+
+
+def test_auto_tamper_only_against_application_filters(scan_result):
+    base, result = scan_result
+    f = next(f for f in result.findings if f.check == "sqli" and f.url.endswith("/filtered/item"))
+    assert "input filter bypassed with tamper space2comment" in f.title and "/**/" in f.payload
+    assert "tamper:space2comment" in f.tags
+    # behind the simulated WAF no tamper is attempted: still no finding, still NOT TESTED
+    assert not [g for g in result.findings if "/waf/search" in g.url and g.check == "sqli"]
+
+
+def test_poc_screenshots_and_evidence(scan_result, tmp_path):
+    pytest.importorskip("playwright")
+    from webguard.reporting import poc
+
+    base, result = scan_result
+    cfg = ScanConfig(rate_limit=1000)
+    n = asyncio.run(poc.capture(result.findings, cfg, Scope.for_target(base), tmp_path))
+    assert n >= 10
+    by_kind = {}
+    for f in result.findings:
+        if f.context.get("poc_screenshot"):
+            assert (tmp_path / f.context["poc_screenshot"]).stat().st_size > 2000
+            by_kind.setdefault(f.context["poc_kind"], []).append(f)
+    # reflected XSS: an executing PoC was observed in the browser, not just assumed
+    assert any(f.check == "xss" and any("alert(" in d for d in f.context.get("poc_observed", []))
+               for f in by_kind.get("browser-execution", []))
+    assert any(f.check == "lfi" for f in by_kind.get("live-response", []))
+    auth = next(f for f in result.findings if f.check == "auth")
+    assert '"token"' in auth.context["http_response"]  # replayed request captured the real response

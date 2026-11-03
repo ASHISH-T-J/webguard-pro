@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import random
+import re
 
 from webguard.detection.baseline import similarity
 from webguard.detection.context import Context
-from webguard.detection.tamper import apply_tamper
+from webguard.detection.tamper import AUTO_CHAINS, apply_tamper
 from webguard.models import DIFFERENTIAL, SIGNATURE, TIMING, Confidence, Finding, InjectionPoint, Severity
 
 ERROR_PROBES = ["'", '"', "\\", "')", "'\")", "`", "';", "' AND", "%27", "1'1"]
@@ -43,7 +44,8 @@ REFS = ["https://owasp.org/www-community/attacks/SQL_Injection", "https://cwe.mi
 
 
 def _finding(point: InjectionPoint, title: str, conf: Confidence, payload: str, evidence: str,
-             detection: str, ctx: Context, features: dict[str, float] | None = None, dbms: str | None = None) -> Finding:
+             detection: str, ctx: Context, features: dict[str, float] | None = None, dbms: str | None = None,
+             tamper: tuple[str, ...] = ()) -> Finding:
     return Finding(
         check="sqli",
         title=title,
@@ -61,19 +63,44 @@ def _finding(point: InjectionPoint, title: str, conf: Confidence, payload: str, 
         owasp="A03:2021-Injection",
         detection=detection,
         references=REFS,
-        tags=["injection", "sqli"] + ([dbms.lower()] if dbms else []),
+        tags=["injection", "sqli"] + ([dbms.lower()] if dbms else []) + ([f"tamper:{'+'.join(tamper)}"] if tamper else []),
         request=ctx.curl(point, payload),
         features=features or {},
     )
+
+
+FILTER_HINT = re.compile(r"(?i)invalid (?:characters?|input|value|parameter|request)|not allowed|illegal "
+                         r"(?:characters?|input)|forbidden characters?|bad input|disallowed|hack(?:ing)? attempt|"
+                         r"possible (?:attack|injection)|detected (?:sql|injection)")
 
 
 async def run(ctx: Context, point: InjectionPoint) -> None:
     base = await ctx.baseline(point)
     if base is None:
         return
-    o = point.original
-    tamper = ctx.config.tamper
+    signals = {"filtered": 0, "obstructed": 0}
+    if await _detect(ctx, point, base, ctx.config.tamper, signals, timing=True, label=""):
+        return
+    # Basics failed. If the APPLICATION reacted like an input blacklist (not a WAF/CDN), try tamper chains.
+    if not ctx.config.auto_tamper or ctx.config.tamper or signals["obstructed"] or not signals["filtered"]:
+        return
+    for chain in AUTO_CHAINS:
+        if await _detect(ctx, point, base, chain, {"filtered": 0, "obstructed": 0}, timing=False,
+                         label=f" - input filter bypassed with tamper {'+'.join(chain)}"):
+            return
 
+
+def _observe(ctx: Context, point: InjectionPoint, base, r, signals: dict) -> None:
+    """Classify a probe response: application input filter vs. WAF/CDN obstruction."""
+    if not ctx.app_answered(r, point, "sqli"):
+        signals["obstructed"] += 1
+    elif base.primary.status < 400 and (r.status in (400, 403, 406, 422) or FILTER_HINT.search(r.text[:5000])):
+        signals["filtered"] += 1
+
+
+async def _detect(ctx: Context, point: InjectionPoint, base, tamper: tuple[str, ...], signals: dict,
+                  timing: bool, label: str) -> bool:
+    o = point.original
     # 1) error-based -------------------------------------------------------------
     dbms = None
     for probe in ERROR_PROBES:
@@ -81,13 +108,14 @@ async def run(ctx: Context, point: InjectionPoint) -> None:
         r = await ctx.send(point, payload)
         if r is None:
             continue
+        _observe(ctx, point, base, r, signals)
         m = ctx.sigdb.match_sql_error(r.text)
         if m and not any(ctx.sigdb.match_sql_error(s.text) for s in base.samples):
             dbms = m.name
             ctx.report(_finding(
-                point, f"SQL injection (error-based, {m.name})", Confidence.FIRM, payload,
+                point, f"SQL injection (error-based, {m.name}){label}", Confidence.FIRM, payload,
                 f"DBMS error triggered by payload: {m.value}", SIGNATURE, ctx,
-                {"error_signature": 1.0, "status": float(r.status)}, dbms=m.name,
+                {"error_signature": 1.0, "status": float(r.status)}, dbms=m.name, tamper=tamper,
             ))
             break
 
@@ -95,19 +123,21 @@ async def run(ctx: Context, point: InjectionPoint) -> None:
     if base.stable_similarity >= 0.6:  # too dynamic pages give unreliable diffs
         pairs = BOOLEAN_PAIRS_NUMERIC + BOOLEAN_PAIRS_STRING if o.lstrip("-").isdigit() else BOOLEAN_PAIRS_STRING
         for true_t, false_t in pairs:
-            ok, feats, payload = await _boolean_test(ctx, point, base, true_t, false_t)
+            ok, feats, payload = await _boolean_test(ctx, point, base, true_t, false_t, tamper, signals)
             if ok:
                 ctx.report(_finding(
-                    point, "SQL injection (boolean-based blind)", Confidence.FIRM, payload,
+                    point, f"SQL injection (boolean-based blind){label}", Confidence.FIRM, payload,
                     "TRUE condition reproduces the original page while FALSE condition changes it "
                     f"(similarity true={feats['sim_true']:.2f}, false={feats['sim_false']:.2f}, "
                     f"baseline stability={feats['stability']:.2f}); confirmed with 2 random value pairs.",
-                    DIFFERENTIAL, ctx, feats, dbms=dbms,
+                    DIFFERENTIAL, ctx, feats, dbms=dbms, tamper=tamper,
                 ))
-                break
+                return True
+    if ctx.has("sqli", point):
+        return True
 
     # 3) time-based ---------------------------------------------------------------
-    if ctx.config.timing_checks and not ctx.has("sqli", point):
+    if timing and ctx.config.timing_checks:
         candidates = TIME_PAYLOADS.items()
         if dbms in TIME_PAYLOADS:
             candidates = [(dbms, TIME_PAYLOADS[dbms])]
@@ -117,27 +147,32 @@ async def run(ctx: Context, point: InjectionPoint) -> None:
                     point, lambda d, t=tpl: apply_tamper(t.format(o=o, d=d), tamper), base
                 )
                 if ok:
-                    payload = apply_tamper(tpl.format(o=o, d=ctx.config.time_delay), tamper)
+                    payload = apply_tamper(tpl.format(o=o, d=int(ev.get("delay", ctx.config.time_delay))), tamper)
                     ctx.report(_finding(
-                        point, f"SQL injection (time-based blind, {db})", Confidence.FIRM, payload,
+                        point, f"SQL injection (time-based blind, {db}){label}", Confidence.FIRM, payload,
                         f"Response delay follows the injected sleep value: {ev}", TIMING, ctx, ev, dbms=db,
+                        tamper=tamper,
                     ))
-                    return
+                    return True
+    return False
 
 
-async def _boolean_test(ctx: Context, point: InjectionPoint, base, true_t: str, false_t: str):
+async def _boolean_test(ctx: Context, point: InjectionPoint, base, true_t: str, false_t: str,
+                        tamper: tuple[str, ...] = (), signals: dict | None = None):
     o = point.original
     feats: dict[str, float] = {}
     payload = ""
     for attempt in range(2):
         n = random.randint(100, 9999)
         m = n + random.randint(1, 50)
-        t_payload = apply_tamper(true_t.format(o=o, n=n, m=m), ctx.config.tamper)
-        f_payload = apply_tamper(false_t.format(o=o, n=n, m=m), ctx.config.tamper)
+        t_payload = apply_tamper(true_t.format(o=o, n=n, m=m), tamper)
+        f_payload = apply_tamper(false_t.format(o=o, n=n, m=m), tamper)
         rt = await ctx.send(point, t_payload)
         rf = await ctx.send(point, f_payload)
         if rt is None or rf is None:
             return False, feats, payload
+        if signals is not None:
+            _observe(ctx, point, base, rt, signals)
         # a block page / challenge for the FALSE payload is a classic boolean-SQLi false positive
         if not (ctx.app_answered(rt, point, "sqli") and ctx.app_answered(rf, point, "sqli")):
             return False, feats, payload
@@ -151,7 +186,7 @@ async def _boolean_test(ctx: Context, point: InjectionPoint, base, true_t: str, 
             return False, feats, payload
         # the FALSE page must also not be what *any* garbage produces (input validation error pages)
         if attempt == 0:
-            junk = await ctx.send(point, o + "wg" + str(n))
+            junk = await ctx.send(point, apply_tamper(o + "wg" + str(n), tamper))
             if junk is not None and not base.matches(junk, reflect=[o + "wg" + str(n)]):
                 # app rejects any change -> only accept if FALSE page differs from the junk page too
                 if similarity(rf.text, junk.text, reflect) > 0.95 and rf.status == junk.status:

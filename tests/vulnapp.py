@@ -57,6 +57,7 @@ INDEX = """<html><head><title>Shop</title>
 <a href="/oauth/authorize?client_id=web&redirect_uri=https://shop.test/callback&response_type=code">sso</a>
 <a href="/safe/oauth/authorize?client_id=web&redirect_uri=https://shop.test/callback&response_type=code">safe sso</a>
 <a href="/waf/search?q=shoes">protected search</a>
+<a href="/filtered/item?id=1">filtered item</a> <a href="/safe/filtered/item?id=1">safe filtered item</a>
 <a href="/app">app</a> <a href="/safe/app">safe app</a> <a href="/track">track</a> <a href="/safe/track">safe track</a> <a href="/welcome">welcome</a> <a href="/safe/welcome">safe welcome</a>
 <a href="/admin">admin</a> <a href="/safe/admin">safe admin</a> <a href="/dom">dom</a> <a href="/safe/dom">safe dom</a>
 <form action="/profile/update" method="post"><input name="nickname" value="bob"><input type="submit"></form>
@@ -222,6 +223,19 @@ class Handler(BaseHTTPRequestHandler):
             js = f"document.getElementById('out').{sink} = decodeURIComponent(location.hash.slice(1));"
             return self._send(f"<html><body><div id=out></div><script>{js}</script></body></html>",
                               headers={"Set-Cookie": f"auth={TOKEN}; Path=/; HttpOnly; SameSite=Lax"})
+        if p in ("/filtered/item", "/safe/filtered/item"):  # application-level blacklist (not a WAF)
+            raw = q.get("id", "")
+            if re.search(r"[ '\"]", raw):
+                return self._send(page("<h2>Invalid characters in input</h2>"), 400)
+            sql = raw.replace("/**/", " ")  # the database treats comments as whitespace
+            if p == "/safe/filtered/item":
+                item = ITEMS.get(raw) if raw.isdigit() else None
+                return self._send(page(f"<h2>{html.escape(item or 'No such item')}</h2>"))
+            m = re.fullmatch(r"(\d+)(?: AND (\d+)=(\d+))?", sql)
+            if not m or (m.group(2) and m.group(2) != m.group(3)):
+                return self._send(page("<h2>No such item</h2>"))
+            return self._send(page(f"<h2>{ITEMS.get(m.group(1), 'No such item')}</h2><p>In stock. Great product "
+                                   "with many words describing it at length for differential testing.</p>"))
         if p == "/waf/search":  # simulated WAF in front of an (unreachable) search: blocks anything unusual
             if re.search(r"[^A-Za-z0-9 ]", q.get("q", "")):
                 return self._send("<html><head><title>Attention Required! | Cloudflare</title></head><body>"

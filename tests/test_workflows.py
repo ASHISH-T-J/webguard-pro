@@ -87,3 +87,29 @@ def test_exposed_service_findings():
     fs = active.exposed_service_findings("h.test", [443, 6379, 2375])
     assert {f.title.split(" port")[0] for f in fs} == {"Redis", "Docker API (unauthenticated)"}
     assert max(f.severity for f in fs) == Severity.CRITICAL
+
+
+def test_hunt_scans_subdomains_in_parallel(tmp_path, monkeypatch):
+    with VulnServer() as a, VulnServer() as b:
+        names = [urlsplit(a.url).netloc, urlsplit(b.url).netloc]
+
+        async def subs(domain, proxy=None, use_tools=True):
+            return {"stub": set(names)}
+
+        async def history(domain, proxy=None, use_tools=True):
+            return set()
+
+        async def resolve_many(hosts, concurrency=50):
+            return {h: ["127.0.0.1"] for h in hosts}
+
+        monkeypatch.setattr(passive, "enumerate_subdomains", subs)
+        monkeypatch.setattr(passive, "historical_urls", history)
+        monkeypatch.setattr(active, "resolve_many", resolve_many)
+        cfg = ScanConfig(rate_limit=1000, timing_checks=False, model_path=tmp_path / "m.json",
+                         checks=("lfi", "xss", "exposure"), browser=False)
+        res = asyncio.run(hunt_mod.hunt(names[0], cfg, Scope(include=names), Database(tmp_path / "w.db"),
+                                        tmp_path / "out", ["json"], use_nuclei=False, use_tools=False,
+                                        parallel_hosts=2, screenshots=False, status=lambda m: None))
+    assert len(res.host_results) == 2
+    hosts_with_lfi = {urlsplit(f.url).netloc for f in res.findings if f.check == "lfi"}
+    assert hosts_with_lfi == set(names)

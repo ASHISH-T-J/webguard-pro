@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import html
 import json
 from collections import Counter
@@ -92,6 +93,7 @@ def write_html(report: dict[str, Any], path: Path) -> Path:
                 ("Reproduce", f"<pre>{_e(f.get('request'))}</pre>" if f.get("request") else ""),
                 ("Context", _context_html(f.get("context") or {})),
                 ("HTTP evidence", _http_html(f.get("context") or {})),
+                ("PoC screenshot", _poc_html(f.get("context") or {}, path.parent)),
             ] if v and v not in ("<code></code>", "<code>None</code>")
         )
         rows.append(
@@ -145,6 +147,22 @@ input#q{{padding:6px;width:100%;max-width:320px;margin:8px 0}} .bar{{display:fle
 </body></html>"""
     path.write_text(doc)
     return path
+
+
+POC_LABEL = {"browser-execution": "script execution observed in headless Chromium",
+             "live-response": "live response, evidence highlighted",
+             "http-evidence": "recorded HTTP request/response"}
+
+
+def _poc_html(ctx: dict[str, Any], base: Path) -> str:
+    rel = ctx.get("poc_screenshot")
+    if not rel or not (base / rel).exists():
+        return ""
+    data = base64.b64encode((base / rel).read_bytes()).decode()
+    label = POC_LABEL.get(ctx.get("poc_kind", ""), "")
+    return (f"<figure style='margin:0'><img alt='PoC screenshot' src='data:image/png;base64,{data}' "
+            f"style='max-width:100%;border:1px solid var(--line);border-radius:4px'>"
+            f"<figcaption class='muted'>{_e(label)} · file: {_e(rel)}</figcaption></figure>")
 
 
 def _context_html(ctx: dict[str, Any]) -> str:
@@ -278,6 +296,8 @@ def finding_markdown(f: Finding) -> str:
 def _md_evidence(f: Finding) -> str:
     ctx = f.context or {}
     out = ""
+    if ctx.get("poc_screenshot"):
+        out += f"\n**PoC screenshot** ({POC_LABEL.get(ctx.get('poc_kind', ''), '')}):\n\n![PoC]({ctx['poc_screenshot']})\n"
     if ctx.get("http_request"):
         out += f"\n**HTTP request**\n\n```http\n{ctx['http_request']}\n```\n"
         out += f"\n**HTTP response (excerpt)**\n\n```http\n{ctx.get('http_response', '')[:2500]}\n```\n"

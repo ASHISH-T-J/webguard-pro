@@ -10,6 +10,8 @@ highlighted, which is where fresh bugs usually are.
 
 from __future__ import annotations
 
+import asyncio
+import dataclasses
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -37,11 +39,12 @@ class HuntResult:
     new_findings: list[Finding] = field(default_factory=list)
     reports: list[Path] = field(default_factory=list)
     ranking: list[dict] = field(default_factory=list)
+    host_results: dict = field(default_factory=dict)  # host url -> AssessmentResult
 
 
 async def hunt(domain: str, config: ScanConfig, scope: Scope, db: Database, out_dir: Path,
                formats: list[str], max_hosts: int = 25, use_nuclei: bool = True, use_tools: bool = True,
-               content_discovery: bool = False,
+               content_discovery: bool = False, parallel_hosts: int = 4, screenshots: bool = True,
                transport: httpx.AsyncBaseTransport | None = None, on_finding: Callable[[Finding], None] | None = None,
                status: Callable[[str], None] = print) -> HuntResult:
     scan_id = db.start_scan(domain, "hunt")
@@ -66,16 +69,33 @@ async def hunt(domain: str, config: ScanConfig, scope: Scope, db: Database, out_
     if discovered:
         db.upsert_assets(scan_id, domain, "endpoint", discovered)
 
-    engine = ScanEngine(config, scope, transport=transport, on_finding=on_finding, on_status=status)
-    for host in targets:
-        status(f"── {host.url}")
-        extra = (urls_for_host(discovered, host.url) + urls_for_host(recon.historical_urls, host.url))[:500]
-        res = await engine.scan(host.url, extra_urls=extra, hosts=[host])
-        result.findings += res.findings
-        db.upsert_assets(scan_id, domain, "endpoint", res.urls)
-        db.upsert_assets(scan_id, domain, "js", res.js_files)
-        db.upsert_assets(scan_id, domain, "param", sorted({f"{p.method} {p.url} [{p.location}] {p.name}"
-                                                          for p in res.points}))
+    # scan hosts concurrently; the user's global rate/concurrency budget is split between them
+    width = max(1, min(parallel_hosts, len(targets)))
+    per_host = dataclasses.replace(config, rate_limit=max(1.0, config.rate_limit / width),
+                                   concurrency=max(4, config.concurrency // width))
+    sem = asyncio.Semaphore(width)
+    if width > 1:
+        status(f"Scanning {len(targets)} hosts, {width} in parallel ({per_host.rate_limit:g} req/s each)")
+
+    async def scan_host(host: Host) -> None:
+        async with sem:
+            status(f"── {host.url}")
+            engine = ScanEngine(per_host, scope, transport=transport, on_finding=on_finding,
+                                on_status=lambda m, h=host.url: status(f"[{h}] {m}"))
+            extra = (urls_for_host(discovered, host.url) + urls_for_host(recon.historical_urls, host.url))[:500]
+            try:
+                res = await engine.scan(host.url, extra_urls=extra, hosts=[host])
+            except Exception as exc:  # one broken host must not abort the hunt
+                status(f"   {host.url} failed: {type(exc).__name__}: {exc}")
+                return
+            result.findings.extend(res.findings)
+            result.host_results[host.url] = res
+            db.upsert_assets(scan_id, domain, "endpoint", res.urls)
+            db.upsert_assets(scan_id, domain, "js", res.js_files)
+            db.upsert_assets(scan_id, domain, "param", sorted({f"{p.method} {p.url} [{p.location}] {p.name}"
+                                                              for p in res.points}))
+
+    await asyncio.gather(*(scan_host(h) for h in targets))
 
     if use_nuclei and tools.available().get("nuclei"):
         status("Running nuclei templates against live services")
@@ -85,6 +105,12 @@ async def hunt(domain: str, config: ScanConfig, scope: Scope, db: Database, out_
             f.ml_score = model.predict(f)
         result.findings += nuclei_findings
 
+    if screenshots:
+        from webguard.reporting import poc
+
+        n = await poc.capture(result.findings, config, scope, out_dir)
+        if n:
+            status(f"Captured {n} PoC screenshot(s)")
     result.new_findings = db.save_findings(scan_id, domain, result.findings)
     db.finish_scan(scan_id, {"hosts": len(recon.hosts), "findings": len(result.findings),
                              "new_findings": len(result.new_findings)})

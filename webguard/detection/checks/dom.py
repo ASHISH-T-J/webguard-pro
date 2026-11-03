@@ -31,16 +31,50 @@ CHROMIUM_PATHS = ["/opt/pw-browsers/chromium", "/usr/bin/chromium", "/usr/bin/ch
                   "/usr/bin/google-chrome", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"]
 
 
+# no phoning home: component updates, safe browsing, sync, metrics, DNS prefetch ... must not leave scope
+BROWSER_ARGS = ["--no-sandbox", "--disable-background-networking", "--disable-component-update",
+                "--disable-sync", "--disable-default-apps", "--no-default-browser-check", "--no-first-run",
+                "--metrics-recording-only", "--disable-domain-reliability", "--disable-client-side-phishing-detection",
+                "--disable-features=OptimizationHints,MediaRouter,Translate,AutofillServerCommunication,"
+                "InterestFeedContentSuggestions,CalculateNativeWinOcclusion",
+                "--dns-prefetch-disable"]
+
+
+def scoped_router(scope, stats: dict | None = None):
+    """Route handler enforcing scope on EVERY hop.
+
+    Playwright routes only see the first request of a redirect chain, so requests are fetched here with
+    redirects disabled and the raw 3xx is handed back to the browser; the browser's follow-up request for
+    the Location comes back through this handler and is scope-checked like any other.
+    """
+    async def handler(route):
+        url = route.request.url
+        if url.startswith(("data:", "blob:", "about:")):
+            await route.continue_()
+            return
+        if not scope.in_scope(url):
+            if stats is not None:
+                stats["blocked_out_of_scope"] = stats.get("blocked_out_of_scope", 0) + 1
+            await route.abort()
+            return
+        try:
+            response = await route.fetch(max_redirects=0)
+            await route.fulfill(response=response)
+        except Exception:
+            await route.abort()
+    return handler
+
+
 async def launch_browser(pw):
     """Playwright's bundled Chromium, else WEBGUARD_CHROMIUM / a system Chrome/Chromium."""
     try:
-        return await pw.chromium.launch(args=["--no-sandbox"])
+        return await pw.chromium.launch(args=BROWSER_ARGS)
     except Exception as first:
         for path in [os.environ.get("WEBGUARD_CHROMIUM"), shutil.which("chromium"), shutil.which("google-chrome"),
                      *CHROMIUM_PATHS]:
             if path and os.path.exists(path):
                 try:
-                    return await pw.chromium.launch(executable_path=path, args=["--no-sandbox"])
+                    return await pw.chromium.launch(executable_path=path, args=BROWSER_ARGS)
                 except Exception:
                     continue
         log.warning("cannot launch headless browser (set WEBGUARD_CHROMIUM): %s", str(first).splitlines()[0])
@@ -110,15 +144,7 @@ async def dom_xss(ctx: Context, targets: list[tuple[str, str]], concurrency: int
                                             extra_http_headers=ctx.config.headers or None,
                                             user_agent=ctx.config.user_agent)
 
-        async def guard(route):
-            url = route.request.url
-            if url.startswith(("data:", "blob:", "about:")) or ctx.client.scope.in_scope(url):
-                await route.continue_()
-            else:
-                ctx.client.stats["blocked_out_of_scope"] += 1
-                await route.abort()
-
-        await context.route("**/*", guard)
+        await context.route("**/*", scoped_router(ctx.client.scope, ctx.client.stats))
         sem = asyncio.Semaphore(concurrency)
         found_routes: set[str] = set()
 
@@ -160,6 +186,9 @@ async def dom_xss(ctx: Context, targets: list[tuple[str, str]], concurrency: int
                             references=["https://portswigger.net/web-security/cross-site-scripting/dom-based"],
                             tags=["xss", "dom", "browser-verified"],
                             request="open in browser: " + templ.replace("{p}", quote(payload, safe="")),
+                            context={"poc_url": templ.replace("{p}", quote(
+                                raw.format(v="__wgpoc").replace("window.__wgpoc=1", "alert(document.domain)")
+                                   .replace("parent.__wgpoc=1", "alert(document.domain)"), safe=""))},
                         ))
                         return
 
@@ -183,13 +212,7 @@ async def prototype_pollution(ctx: Context, pages: list[str], timeout_ms: int = 
             return
         context = await browser.new_context(ignore_https_errors=True, user_agent=ctx.config.user_agent)
 
-        async def guard(route):
-            if route.request.url.startswith(("data:", "blob:", "about:")) or ctx.client.scope.in_scope(route.request.url):
-                await route.continue_()
-            else:
-                await route.abort()
-
-        await context.route("**/*", guard)
+        await context.route("**/*", scoped_router(ctx.client.scope, ctx.client.stats))
         for base in pages[:8]:
             for vec in PP_VECTORS:
                 key = "wg" + token(6)

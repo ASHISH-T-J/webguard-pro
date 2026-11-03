@@ -123,7 +123,14 @@ async def run(ctx: Context, point: InjectionPoint) -> None:
             continue
         if check(resp.text):
             conf = Confidence.CERTAIN if kind in ("html", "attr") else Confidence.FIRM
+            poc = _exec_payload(kind, payload, canary, c2)
+            context = {}
+            if poc and point.method.upper() == "GET" and point.location in ("query", "form"):
+                context["poc_url"] = str(ctx.client._client.build_request(
+                    "GET", point.url, params=point.with_value(poc)).url)
+                context["poc_payload"] = poc
             ctx.report(Finding(
+                context=context,
                 check="xss",
                 title=f"Reflected cross-site scripting ({kind} context)",
                 severity=sev,
@@ -146,3 +153,21 @@ async def run(ctx: Context, point: InjectionPoint) -> None:
                 features={"contexts": float(len(ctxs))},
             ))
             return
+
+
+def _exec_payload(kind: str, confirmed: str, canary: str, marker: str) -> str | None:
+    """Turn the harmless confirmation payload into a visibly executing PoC for the same context."""
+    alert = "alert(document.domain)"
+    if kind == "html":
+        prefix = confirmed.split("<", 1)[0]  # '-->' / '</textarea>' break-outs are kept
+        return f"{prefix}<img src=x onerror={alert}>"
+    if kind == "attr":
+        quote = confirmed[len(canary):len(canary) + 1] if confirmed.startswith(canary) else '"'
+        quote = quote if quote in "\"'" else ""
+        return f"{canary}{quote}><img src=x onerror={alert}>"
+    if kind == "script" and confirmed.startswith(canary):
+        brk = confirmed[len(canary):].split(f"{marker}=1", 1)[0]
+        return f"{canary}{brk}{alert};//"
+    if kind == "script" and confirmed.startswith("</script>"):
+        return f"</script><img src=x onerror={alert}>"
+    return None

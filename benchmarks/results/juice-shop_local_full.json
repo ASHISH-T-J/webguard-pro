@@ -2,8 +2,8 @@
   "target": "OWASP Juice Shop (bkimminich/juice-shop:latest)",
   "reasoner": "local",
   "budget_requests": null,
-  "seconds": 223.6,
-  "requests": 5197,
+  "seconds": 238.9,
+  "requests": 5248,
   "recall": "15/15",
   "ground_truth": {
     "SQL injection in product search (/rest/products/search?q)": true,
@@ -24,11 +24,11 @@
   },
   "findings": [
     "CRITICAL CERTAIN Authentication bypass via SQL injection @ http://127.0.0.1:3000/rest/user/login email",
-    "HIGH CERTAIN DOM-based cross-site scripting (SPA route #/search param q) @ http://127.0.0.1:3000/ q",
+    "HIGH CERTAIN DOM-based cross-site scripting (SPA route #/change-password param q) @ http://127.0.0.1:3000/ q",
     "HIGH CERTAIN Credentials / password hashes exposed in API response @ http://127.0.0.1:3000/rest/memories ",
     "HIGH CERTAIN Credentials / password hashes exposed in API response @ http://127.0.0.1:3000/support/logs/audit.json ",
     "HIGH FIRM SQL injection (error-based, SQLite) @ http://127.0.0.1:3000/rest/products/search q",
-    "MEDIUM CERTAIN JWT weaknesses: sensitive claims in payload @ http://127.0.0.1:3000/#jwt-2de2b3e7 ",
+    "MEDIUM CERTAIN JWT weaknesses: sensitive claims in payload @ http://127.0.0.1:3000/#jwt-c2ea81b7 ",
     "MEDIUM CERTAIN Open redirect @ http://127.0.0.1:3000/redirect to",
     "MEDIUM FIRM Administrative/internal API accessible without authentication @ http://127.0.0.1:3000/rest/admin/application-configuration ",
     "MEDIUM FIRM Bulk personal data exposed in API response @ http://127.0.0.1:3000/rest/memories#pii ",
@@ -103,7 +103,7 @@
         "forbidden_bypass:http://127.0.0.1:3000/rest/image-captcha/",
         "forbidden_bypass:http://127.0.0.1:3000/rest/wallet/balance"
       ],
-      "observation": "18 test(s), 544 requests; 6 new finding(s): INFO Missing security headers @ /; LOW Prometheus metrics exposed @ /metrics; LOW CORS allows any origin (*) on API @ /; INFO Swagger UI / API documentation exposed @ /api-docs/; INFO Unlinked content discovered @ /; INFO security.txt present @ /.well-known/security.txt"
+      "observation": "18 test(s), 544 requests; 6 new finding(s): INFO Unlinked content discovered @ /; INFO security.txt present @ /.well-known/security.txt; LOW Prometheus metrics exposed @ /metrics; INFO Swagger UI / API documentation exposed @ /api-docs/; INFO Missing security headers @ /; LOW CORS allows any origin (*) on API @ /"
     },
     {
       "step": 4,
@@ -143,7 +143,7 @@
         "auth_bypass:POST http://127.0.0.1:3000/rest/user/login [json]",
         "passive_analysis:all-responses"
       ],
-      "observation": "2 test(s), 3 requests; 17 new finding(s): CRITICAL Authentication bypass via SQL injection @ /rest/user/login [email]; INFO Exposed secret: Internal IP Address @ /; LOW Directory listing enabled @ /ftp; HIGH Credentials / password hashes exposed in API response @ /rest/memories; LOW Express Error Page Stack Trace @ /; MEDIUM Bulk personal data exposed in API response @ /rest/memories"
+      "observation": "2 test(s), 3 requests; 17 new finding(s): LOW Directory listing enabled @ /support/logs; LOW Directory listing enabled @ /.well-known; HIGH Credentials / password hashes exposed in API response @ /rest/memories; HIGH Credentials / password hashes exposed in API response @ /support/logs/audit.json; INFO Exposed secret: Internal IP Address @ /; INFO Exposed secret: Internal IP Address @ /"
     },
     {
       "step": 7,
@@ -177,7 +177,7 @@
         "inject:GET http://127.0.0.1:3000/login [header] User-Agent",
         "inject:GET http://127.0.0.1:3000/order-history [header] User-Agent"
       ],
-      "observation": "25 test(s), 1989 requests; 4 new finding(s): MEDIUM Open redirect @ /redirect [to]; LOW Anomalous input handling (server errors) @ /api/Challenges/ [key]; HIGH SQL injection (error-based, SQLite) @ /rest/products/search [q]; LOW Anomalous input handling (server errors) @ /rest/user/security-question [email]"
+      "observation": "25 test(s), 1991 requests; 4 new finding(s): LOW Anomalous input handling (server errors) @ /rest/user/security-question [email]; MEDIUM Open redirect @ /redirect [to]; LOW Anomalous input handling (server errors) @ /api/Challenges/ [key]; HIGH SQL injection (error-based, SQLite) @ /rest/products/search [q]"
     },
     {
       "step": 8,
@@ -281,7 +281,7 @@
         "cache_deception:http://127.0.0.1:3000/order-summary",
         "cache_deception:http://127.0.0.1:3000/orders"
       ],
-      "observation": "7 test(s), 240 requests; 1 new finding(s): HIGH DOM-based cross-site scripting (SPA route #/search param q) @ / [q]"
+      "observation": "7 test(s), 289 requests; 1 new finding(s): HIGH DOM-based cross-site scripting (SPA route #/change-password param q) @ / [q]"
     },
     {
       "step": 12,
