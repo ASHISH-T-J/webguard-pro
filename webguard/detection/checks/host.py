@@ -120,6 +120,17 @@ async def cors(ctx: Context, url: str) -> None:
             return
         acao = r.headers.get("access-control-allow-origin", "")
         creds = r.headers.get("access-control-allow-credentials", "").lower() == "true"
+        if acao == "*" and "json" in r.content_type and not ctx.has("cors", url=_root(url) + "/#wildcard"):
+            ctx.report(Finding(
+                check="cors", title="CORS allows any origin (*) on API", severity=Severity.LOW,
+                confidence=Confidence.CERTAIN, url=_root(url) + "/#wildcard", payload=f"Origin: {origin}",
+                evidence=f"Access-Control-Allow-Origin: * on {url}",
+                description="Any website can read these API responses cross-origin. Without credentials this only "
+                            "matters for data that is protected by network position (intranet) or IP allow-lists.",
+                remediation="Restrict Access-Control-Allow-Origin to the origins that need it.",
+                cwe="CWE-942", owasp="A05:2021-Security Misconfiguration", detection=SIGNATURE, tags=["cors"],
+            ))
+            return
         if acao != origin:
             continue
         if origin.startswith("http://") and origin.endswith(host) and not creds:

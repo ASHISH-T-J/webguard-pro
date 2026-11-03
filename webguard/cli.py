@@ -4,6 +4,10 @@
     webguard recon   <domain>         subdomains, DNS, live hosts, takeover, historical URLs
     webguard hunt    <domain>         full bug bounty pipeline (recon -> rank -> scan -> nuclei -> triage -> reports)
     webguard surface <domain>         red-team external attack surface (ports, exposed services, ATT&CK mapping)
+    webguard assess  <url>            autonomous methodology-driven assessment (local / Claude / Ollama reasoning)
+    webguard grep    <scan-id>        grep stored responses with pattern packs (DOM sinks, secrets, infra, ...)
+    webguard ask     "<question>"     natural-language query over findings
+    webguard analyze <scan-id>        root-cause issues, attack chains, reasoning trace
     webguard report  <scan-id>        re-generate reports from the database
     webguard db ...                   scans, findings, assets, new attack surface, labels
     webguard ml ...                   train / inspect the ML triage model
@@ -54,6 +58,8 @@ def _common(p: argparse.ArgumentParser) -> None:
     g.add_argument("--oob", metavar="DOMAIN", help="out-of-band interaction domain (interactsh/Collaborator) for blind SSRF")
     g.add_argument("--tamper", help="comma list: space2comment,randomcase,space2plus,versioned,charencode")
     g.add_argument("--signatures", action="append", default=[], help="extra signature directory (JSON files)")
+    g.add_argument("--wordlist", help="content-discovery wordlist (default: built-in quick list of ~200 paths)")
+    g.add_argument("--no-discovery", action="store_true", help="skip content discovery (path brute force)")
     g = p.add_argument_group("output")
     g.add_argument("-o", "--output", default="reports", help="report directory (default ./reports)")
     g.add_argument("-f", "--format", default="json,html,md", help=f"report formats: {','.join(FORMATS)}")
@@ -127,6 +133,38 @@ def build_parser() -> argparse.ArgumentParser:
     msub.add_parser("train", help="train from labelled findings")
     msub.add_parser("status")
 
+    asr = sub.add_parser("assess", help="autonomous methodology-driven assessment (plan -> test -> verify -> analyse)")
+    asr.add_argument("target", help="URL or host")
+    asr.add_argument("--llm", default="local", help="reasoning engine: local (default), claude, ollama[:model]")
+    asr.add_argument("--llm-model", help="model id (default claude-opus-5-5 for claude, qwen2.5:7b for ollama)")
+    asr.add_argument("--llm-effort", default="high", choices=["low", "medium", "high", "xhigh", "max"],
+                     help="Claude effort level for planning decisions")
+    asr.add_argument("--budget-requests", type=int, help="stop active testing after N requests")
+    asr.add_argument("--budget-minutes", type=float, help="stop active testing after N minutes")
+    asr.add_argument("--no-browser", action="store_true", help="skip headless-browser DOM XSS verification")
+    asr.add_argument("--show-trace", action="store_true", help="print every reasoning step (thought/action/observation)")
+    _common(asr)
+
+    g = sub.add_parser("grep", help="grep stored responses of a scan with pattern packs or a regex")
+    g.add_argument("scan_id", type=int)
+    g.add_argument("--pack", action="append", help="dom-sinks, dom-sources, endpoints, infrastructure, debug, "
+                                                   "identity, versions, secrets (default: all)")
+    g.add_argument("--regex", help="custom regular expression")
+    g.add_argument("--in", dest="kinds", help="limit to response kinds: js,json,html,other")
+    g.add_argument("--limit", type=int, default=100)
+    g.add_argument("--db", default=str(DEFAULT_DB))
+
+    q = sub.add_parser("ask", help="natural-language query over findings, e.g. \"high sql injection on api\"")
+    q.add_argument("question")
+    q.add_argument("--scan", type=int)
+    q.add_argument("--target")
+    q.add_argument("--llm", default="local", help="local (keyword NLP) or claude / ollama[:model] for free-form answers")
+    q.add_argument("--db", default=str(DEFAULT_DB))
+
+    an = sub.add_parser("analyze", help="root-cause issues, attack chains and narrative for a stored scan")
+    an.add_argument("scan_id", type=int)
+    an.add_argument("--db", default=str(DEFAULT_DB))
+
     sub.add_parser("tools", help="show external tools and signature database status")
     sub.add_parser("wizard", help="interactive guided scan")
     return p
@@ -157,6 +195,8 @@ def make_config(args: argparse.Namespace) -> ScanConfig:
         max_urls=args.max_urls, proxy=args.proxy, headers=headers, cookies=cookies, checks=checks,
         time_delay=args.time_delay, timing_checks=not args.no_timing, param_discovery=args.param_discovery,
         oob_domain=args.oob, tamper=tamper, db_path=Path(args.db), model_path=Path(args.model), verbose=args.verbose,
+        **({"discovery_wordlist": None} if args.no_discovery else
+           {"discovery_wordlist": Path(args.wordlist), "wordlist": Path(args.wordlist)} if args.wordlist else {}),
     )
 
 
@@ -199,18 +239,162 @@ async def cmd_scan(args: argparse.Namespace) -> int:
         engine = ScanEngine(cfg, scope, sigdb, on_finding=ui.print_finding, on_status=ui.status)
         scan_id = db.start_scan(target, "scan")
         res = await engine.scan(target)
-        new = db.save_findings(scan_id, target, res.findings)
-        db.upsert_assets(scan_id, target, "endpoint", res.urls)
-        db.upsert_assets(scan_id, target, "js", res.js_files)
-        db.finish_scan(scan_id, res.stats)
-        meta = {"scan_id": scan_id, "hosts": [h.to_dict() for h in res.hosts], "stats": res.stats, "oob": res.oob}
-        paths = write_all(target, res.findings, Path(args.output), _formats(args.format), meta)
+        new = _persist(db, scan_id, target, res)
+        paths = write_all(target, res.findings, Path(args.output), _formats(args.format), {"scan_id": scan_id, **res.meta()})
         _summary(res.findings, new, res.stats, paths, scan_id)
         if res.oob:
             ui.warn(f"{len(res.oob)} OOB payloads sent - check {cfg.oob_domain} for interactions (tokens in JSON report)")
         if res.findings:
             worst = max(worst, max(f.severity for f in res.findings))
     return 2 if worst >= Severity.HIGH else 0
+
+
+def _persist(db: Database, scan_id: int, target: str, res) -> list:
+    """Store findings, assets, responses (for grep) and the reasoning trace; returns new findings."""
+    new = db.save_findings(scan_id, target, res.findings)
+    db.upsert_assets(scan_id, target, "endpoint", res.urls)
+    db.upsert_assets(scan_id, target, "js", res.js_files)
+    db.upsert_assets(scan_id, target, "param", sorted({f"{p.method} {p.url} [{p.location}] {p.name}" for p in res.points}))
+    db.store_responses(scan_id, (
+        (u, r.method, r.status, r.content_type, dict(r.headers), r.text,
+         res.page_types[u].label if u in res.page_types else None) for u, r in res.pages.items()))
+    for t in res.trace:
+        db.add_trace(scan_id, t.step, t.phase, t.thought, ", ".join(t.actions), t.observation)
+    db.finish_scan(scan_id, res.stats)
+    return new
+
+
+def _print_trace(step) -> None:
+    print(ui.c(f"\n  ▸ step {step.step} [{step.phase}] ({step.engine})", "bold"))
+    print("    " + ui.c("thought: ", "cyan") + step.thought[:600])
+    if step.actions:
+        acts = ", ".join(step.actions[:6]) + (f" (+{len(step.actions) - 6})" if len(step.actions) > 6 else "")
+        print("    " + ui.c("actions: ", "cyan") + acts[:400])
+    print("    " + ui.c("observed: ", "cyan") + step.observation[:600], flush=True)
+
+
+async def cmd_assess(args: argparse.Namespace) -> int:
+    from webguard.ai.reasoner import make_reasoner
+    from webguard.assessment.agent import AssessmentAgent
+    from webguard.assessment.methodology import RULES_OF_ENGAGEMENT
+    from webguard.reporting import write_all
+    from webguard.signatures import SignatureDB
+
+    cfg = make_config(args)
+    cfg.browser = not args.no_browser
+    scope = make_scope(args, args.target)
+    try:
+        reasoner = make_reasoner(args.llm, args.llm_model, args.llm_effort)
+    except ImportError:
+        raise SystemExit("the claude engine needs the Anthropic SDK: pip install 'webguard-pro[llm]'") from None
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
+    print(ui.c("Rules of engagement", "bold"))
+    for rule in RULES_OF_ENGAGEMENT:
+        print("  - " + rule)
+    ui.status(f"Assessing {ui.c(args.target, 'bold')} with the {reasoner.name} reasoning engine")
+    db = Database(cfg.db_path)
+    scan_id = db.start_scan(args.target, "assess")
+    agent = AssessmentAgent(cfg, scope, reasoner, SignatureDB(args.signatures), on_finding=ui.print_finding,
+                            on_status=ui.status, on_trace=_print_trace if args.show_trace else None,
+                            budget_requests=args.budget_requests, budget_minutes=args.budget_minutes)
+    res = await agent.run(args.target)
+    new = _persist(db, scan_id, args.target, res)
+    paths = write_all(args.target, res.findings, Path(args.output), _formats(args.format), {"scan_id": scan_id, **res.meta()})
+    print(ui.c("\nExecutive summary", "bold"))
+    print("  " + res.narrative.get("executive_summary", ""))
+    if res.chains:
+        print(ui.c("\nAttack chains", "bold"))
+        for ch in res.chains:
+            print(f"  {ui.c(ch['severity'], ui.SEV[ch['severity']])} {ch['title']}\n      {ui.c(ch['steps'], 'dim')}")
+    tested = sum(1 for v in res.coverage.values() if v != "not tested")
+    print(ui.c(f"\nOWASP WSTG coverage: {tested}/{len(res.coverage)} areas", "bold"))
+    _summary(res.findings, new, res.stats, paths, scan_id)
+    ui.status(f"Reasoning trace: {len(res.trace)} steps (webguard analyze {scan_id} / HTML report)")
+    return 2 if any(f.severity >= Severity.HIGH for f in res.findings) else 0
+
+
+def cmd_grep(args: argparse.Namespace) -> int:
+    from webguard.analysis.grep import PACKS, grep, summarize
+
+    packs = args.pack
+    if packs:
+        bad = set(packs) - set(PACKS) - {"secrets"}
+        if bad:
+            raise SystemExit(f"unknown packs: {bad}; available: {', '.join([*PACKS, 'secrets'])}")
+    db = Database(args.db)
+    kinds = set(args.kinds.split(",")) if args.kinds else None
+    hits = grep(db.iter_responses(args.scan_id), packs=packs, regex=args.regex, kinds=kinds)
+    if not hits:
+        ui.warn("no matches (did the scan store responses? run scan/assess with this version)")
+        return 1
+    for pack, rules in summarize(hits).items():
+        print(ui.c(f"{pack}: ", "bold") + ", ".join(f"{r} ({n})" for r, n in rules.items()))
+    print()
+    for h in hits[: args.limit]:
+        where = h.locations[0] + (f" (+{len(h.locations) - 1})" if len(h.locations) > 1 else "")
+        print(f"{ui.c(f'{h.score:5.1f}', 'dim')} {ui.c(h.pack, 'cyan')}/{h.rule}: {ui.c(h.value[:120], 'bold')}  {ui.c(where, 'dim')}")
+    return 0
+
+
+def cmd_ask(args: argparse.Namespace) -> int:
+    from webguard.nlp.query import parse, search
+
+    db = Database(args.db)
+    findings = db.findings(scan_id=args.scan, target=args.target)
+    if args.llm and args.llm != "local":
+        from webguard.ai.reasoner import make_reasoner
+
+        reasoner = make_reasoner(args.llm)
+        system = ("Answer the analyst's question about findings from an authorised security assessment. Use only "
+                  "the findings provided; cite URLs; say so if the data does not answer the question.")
+        payload = json.dumps({"question": args.question, "findings": [f.to_dict() for f in findings[:200]]}, default=str)
+        schema = {"type": "object", "properties": {"answer": {"type": "string"}}, "required": ["answer"],
+                  "additionalProperties": False}
+        try:
+            data = asyncio.run(reasoner._complete(system, payload, schema))
+            print(data["answer"])
+            return 0
+        except Exception as exc:
+            ui.warn(f"{reasoner.name} unavailable ({exc}); falling back to local keyword query")
+    q = parse(args.question)
+    hits = search(findings, args.question)
+    ui.status(f"interpreted as: checks={sorted(q.checks) or 'any'} severities={sorted(s.name for s in q.severities) or 'any'}"
+              f"{' min=' + q.min_severity.name if q.min_severity is not None else ''} url~{q.url_patterns or 'any'}"
+              f"{' excluding ' + str(sorted(q.exclude_checks)) if q.exclude_checks else ''}")
+    for f in hits:
+        print(ui.finding_line(f))
+    print(ui.c(f"{len(hits)} of {len(findings)} findings match", "dim"))
+    return 0
+
+
+def cmd_analyze(args: argparse.Namespace) -> int:
+    from webguard.analysis.correlate import attack_chains, cluster, false_positive_signals
+    from webguard.nlp.summarize import executive_summary
+
+    db = Database(args.db)
+    row = next((r for r in db.scans(limit=100000) if r["id"] == args.scan_id), None)
+    if row is None:
+        raise SystemExit(f"scan {args.scan_id} not found")
+    findings = db.findings(scan_id=args.scan_id)
+    chains = attack_chains(findings)
+    print(ui.c("Executive summary", "bold"))
+    print("  " + executive_summary(row["target"], findings, chains))
+    print(ui.c("\nRoot-cause issues (by risk)", "bold"))
+    for i in cluster(findings):
+        flags = false_positive_signals(i.findings[0])
+        print(f"  {i.risk:6.2f}  {ui.c(f'{i.severity.name:<8}', ui.SEV[i.severity.name])} {i.title}  "
+              f"{ui.c(f'CVSS {i.cvss} x{len(i.findings)}', 'dim')}" + (ui.c(f"  ⚠ {'; '.join(flags)}", 'yellow') if flags else ""))
+    if chains:
+        print(ui.c("\nAttack chains", "bold"))
+        for ch in chains:
+            print(f"  {ch['severity']:<8} {ch['title']}\n           {ch['steps']}")
+    trace = db.trace(args.scan_id)
+    if trace:
+        print(ui.c(f"\nReasoning trace ({len(trace)} steps)", "bold"))
+        for t in trace:
+            print(f"  {t['step']:>3} [{t['phase']}] {t['thought'][:200]}\n        -> {t['observation'][:200]}")
+    return 0
 
 
 async def cmd_recon(args: argparse.Namespace) -> int:
@@ -434,10 +618,17 @@ def main(argv: list[str] | None = None) -> int:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     try:
-        if args.cmd in ("scan", "recon", "hunt", "surface"):
+        if args.cmd in ("scan", "recon", "hunt", "surface", "assess"):
             ui.banner()
-            fn = {"scan": cmd_scan, "recon": cmd_recon, "hunt": cmd_hunt, "surface": cmd_surface}[args.cmd]
+            fn = {"scan": cmd_scan, "recon": cmd_recon, "hunt": cmd_hunt, "surface": cmd_surface,
+                  "assess": cmd_assess}[args.cmd]
             return asyncio.run(fn(args))
+        if args.cmd == "grep":
+            return cmd_grep(args)
+        if args.cmd == "ask":
+            return cmd_ask(args)
+        if args.cmd == "analyze":
+            return cmd_analyze(args)
         if args.cmd == "report":
             return cmd_report(args)
         if args.cmd == "db":

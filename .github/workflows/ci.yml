@@ -18,5 +18,6 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - run: pip install -e ".[all,dev]"
-      - run: ruff check webguard tests webguard.py scanner.py
+      - run: python -m playwright install --with-deps chromium
+      - run: ruff check webguard tests benchmarks webguard.py scanner.py
       - run: pytest -q

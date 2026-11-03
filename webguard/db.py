@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import zlib
 from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -57,6 +58,29 @@ CREATE TABLE IF NOT EXISTS findings (
     UNIQUE(scan_id, fingerprint)
 );
 CREATE INDEX IF NOT EXISTS idx_findings_fp ON findings(target, fingerprint);
+CREATE TABLE IF NOT EXISTS responses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scan_id INTEGER NOT NULL,
+    url TEXT NOT NULL,
+    method TEXT NOT NULL,
+    status INTEGER NOT NULL,
+    content_type TEXT,
+    headers TEXT,
+    body BLOB,
+    page_type TEXT,
+    UNIQUE(scan_id, method, url)
+);
+CREATE INDEX IF NOT EXISTS idx_responses_scan ON responses(scan_id);
+CREATE TABLE IF NOT EXISTS trace (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scan_id INTEGER NOT NULL,
+    step INTEGER NOT NULL,
+    phase TEXT,
+    thought TEXT,
+    action TEXT,
+    observation TEXT,
+    at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS labels (
     fingerprint TEXT PRIMARY KEY,
     label TEXT NOT NULL CHECK(label IN ('tp','fp')),
@@ -213,3 +237,34 @@ class Database:
             "WHERE f.id IN (SELECT MAX(id) FROM findings GROUP BY fingerprint)"
         ).fetchall()
         return [(Finding.from_dict(json.loads(r["data"])), 1 if r["label"] == "tp" else 0) for r in rows]
+
+    # ---------------------------------------------------------------- stored responses (for grep/analysis)
+    def store_responses(self, scan_id: int, responses: Iterable[tuple[str, str, int, str, dict, str, str | None]],
+                        max_body: int = 2_000_000) -> int:
+        """responses: (url, method, status, content_type, headers, body, page_type). Bodies are zlib-compressed."""
+        n = 0
+        for url, method, status, ctype, headers, body, page_type in responses:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO responses(scan_id, url, method, status, content_type, headers, body, page_type)"
+                " VALUES (?,?,?,?,?,?,?,?)",
+                (scan_id, url, method, status, ctype, json.dumps(headers),
+                 zlib.compress(body[:max_body].encode(errors="replace"), 6), page_type),
+            )
+            n += 1
+        self.conn.commit()
+        return n
+
+    def iter_responses(self, scan_id: int):
+        for r in self.conn.execute("SELECT * FROM responses WHERE scan_id=? ORDER BY url", (scan_id,)):
+            yield {"url": r["url"], "method": r["method"], "status": r["status"], "content_type": r["content_type"],
+                   "headers": json.loads(r["headers"] or "{}"), "page_type": r["page_type"],
+                   "body": zlib.decompress(r["body"]).decode(errors="replace") if r["body"] else ""}
+
+    # ---------------------------------------------------------------- agent reasoning trace
+    def add_trace(self, scan_id: int, step: int, phase: str, thought: str, action: str, observation: str) -> None:
+        self.conn.execute("INSERT INTO trace(scan_id, step, phase, thought, action, observation, at) VALUES (?,?,?,?,?,?,?)",
+                          (scan_id, step, phase, thought, action, observation, _now()))
+        self.conn.commit()
+
+    def trace(self, scan_id: int) -> list[sqlite3.Row]:
+        return self.conn.execute("SELECT * FROM trace WHERE scan_id=? ORDER BY step", (scan_id,)).fetchall()

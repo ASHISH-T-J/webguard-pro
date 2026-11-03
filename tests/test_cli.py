@@ -48,3 +48,50 @@ def test_cli_scan_end_to_end(tmp_path, capsys):
     assert cli.main(["report", "1", "--db", str(db_path), "-o", str(tmp_path / "r2"), "-f", "md"]) == 0
     md = next((tmp_path / "r2").glob("*.md")).read_text()
     assert "Steps to reproduce" in md and "curl" in md
+
+
+def test_cli_assess_grep_ask_analyze(tmp_path, capsys):
+    db_path = tmp_path / "w.db"
+    out = tmp_path / "reports"
+    with VulnServer() as server:
+        code = cli.main(["assess", server.url, "--no-timing", "--rate", "1000", "--db", str(db_path),
+                         "--model", str(tmp_path / "m.json"), "-o", str(out), "-f", "json,html,md",
+                         "--no-browser", "--show-trace", "--budget-requests", "5000"])
+    assert code == 2
+    printed = capsys.readouterr().out
+    assert "Rules of engagement" in printed and "thought:" in printed and "Executive summary" in printed
+    report = json.loads(next(out.glob("*.json")).read_text())
+    meta = report["meta"]
+    assert meta["trace"] and meta["wstg_coverage"] and meta["attack_chains"] and meta["narrative"]["executive_summary"]
+    html = next(out.glob("*.html")).read_text()
+    assert "Attack chains" in html and "reasoning trace" in html and "OWASP WSTG coverage" in html
+    scan_id = Database(db_path).scans()[0]["id"]
+    # grep stored responses
+    assert cli.main(["grep", str(scan_id), "--db", str(db_path), "--pack", "dom-sinks"]) == 0
+    assert "innerHTML" in capsys.readouterr().out
+    assert cli.main(["grep", str(scan_id), "--db", str(db_path), "--regex", r"AKIA[0-9A-Z]{16}", "--in", "js"]) == 0
+    assert "AKIAIOSFODNN7ABCDXYZ" in capsys.readouterr().out
+    # natural-language question over findings
+    assert cli.main(["ask", "critical sql injection or authentication bypass", "--db", str(db_path)]) == 0
+    assert "Authentication bypass" in capsys.readouterr().out
+    # analysis view
+    assert cli.main(["analyze", str(scan_id), "--db", str(db_path)]) == 0
+    text = capsys.readouterr().out
+    assert "Root-cause issues" in text and "Reasoning trace" in text
+
+
+def test_budget_limits_active_testing(tmp_path):
+    import asyncio
+
+    from webguard.assessment.agent import AssessmentAgent
+    from webguard.config import ScanConfig
+    from webguard.scope import Scope
+
+    with VulnServer() as server:
+        agent = AssessmentAgent(ScanConfig(rate_limit=1000, timing_checks=False, browser=False,
+                                           model_path=tmp_path / "m.json"),
+                                Scope.for_target(server.url), budget_requests=400, on_status=lambda m: None)
+        res = asyncio.run(agent.run(server.url))
+    assert res.stats["requests"] < 400 * 1.5  # in-flight checks finish, then testing stops (verification still runs)
+    assert any(f.check in ("auth", "ssti", "cmdi") for f in res.findings)  # high-value hypotheses tested first
+    assert any("budget" in t.thought.lower() for t in res.trace)

@@ -1,59 +1,415 @@
 {
   "_comment": "Sensitive files / endpoints. A hit requires status match AND body regex match AND the response must differ from the soft-404 fingerprint.",
-  "git-head": {"path": "/.git/HEAD", "name": "Exposed Git repository", "severity": "HIGH", "match": "^ref: refs/heads/|^[0-9a-f]{40}\\s*$", "cwe": "CWE-538"},
-  "git-config": {"path": "/.git/config", "name": "Exposed Git config", "severity": "HIGH", "match": "\\[core\\]", "cwe": "CWE-538"},
-  "svn-entries": {"path": "/.svn/entries", "name": "Exposed SVN metadata", "severity": "MEDIUM", "match": "^(?:\\d+\\s*$|<\\?xml)", "cwe": "CWE-538"},
-  "svn-wcdb": {"path": "/.svn/wc.db", "name": "Exposed SVN wc.db", "severity": "HIGH", "match": "SQLite format 3", "cwe": "CWE-538"},
-  "hg": {"path": "/.hg/requires", "name": "Exposed Mercurial repository", "severity": "MEDIUM", "match": "revlogv1|store", "cwe": "CWE-538"},
-  "env": {"path": "/.env", "name": "Exposed .env file", "severity": "CRITICAL", "match": "(?m)^[A-Z][A-Z0-9_]{2,}=.+", "negative": "<html", "cwe": "CWE-200"},
-  "env-prod": {"path": "/.env.production", "name": "Exposed .env.production", "severity": "CRITICAL", "match": "(?m)^[A-Z][A-Z0-9_]{2,}=.+", "negative": "<html", "cwe": "CWE-200"},
-  "env-local": {"path": "/.env.local", "name": "Exposed .env.local", "severity": "CRITICAL", "match": "(?m)^[A-Z][A-Z0-9_]{2,}=.+", "negative": "<html", "cwe": "CWE-200"},
-  "ds-store": {"path": "/.DS_Store", "name": "Exposed .DS_Store", "severity": "LOW", "match": "Bud1", "cwe": "CWE-538"},
-  "htpasswd": {"path": "/.htpasswd", "name": "Exposed .htpasswd", "severity": "HIGH", "match": "(?m)^[\\w.-]+:(?:\\$apr1\\$|\\$2[aby]\\$|\\{SHA\\}|[./0-9A-Za-z]{13}$)", "cwe": "CWE-522"},
-  "wp-config-bak": {"path": "/wp-config.php.bak", "name": "WordPress config backup", "severity": "CRITICAL", "match": "DB_PASSWORD", "cwe": "CWE-530"},
-  "wp-config-swp": {"path": "/.wp-config.php.swp", "name": "WordPress config swap file", "severity": "CRITICAL", "match": "DB_PASSWORD|wp-config", "cwe": "CWE-530"},
-  "config-php-bak": {"path": "/config.php.bak", "name": "PHP config backup", "severity": "HIGH", "match": "<\\?php", "cwe": "CWE-530"},
-  "web-config": {"path": "/web.config", "name": "Exposed web.config", "severity": "HIGH", "match": "<configuration", "cwe": "CWE-200"},
-  "phpinfo": {"path": "/phpinfo.php", "name": "phpinfo() page", "severity": "MEDIUM", "match": "<title>phpinfo\\(\\)</title>|PHP Version \\d", "cwe": "CWE-200"},
-  "info-php": {"path": "/info.php", "name": "phpinfo() page", "severity": "MEDIUM", "match": "<title>phpinfo\\(\\)</title>|PHP Version \\d", "cwe": "CWE-200"},
-  "server-status": {"path": "/server-status", "name": "Apache server-status", "severity": "MEDIUM", "match": "Apache Server Status for", "cwe": "CWE-200"},
-  "server-info": {"path": "/server-info", "name": "Apache server-info", "severity": "MEDIUM", "match": "Apache Server Information", "cwe": "CWE-200"},
-  "nginx-status": {"path": "/nginx_status", "name": "nginx stub_status", "severity": "LOW", "match": "Active connections:", "cwe": "CWE-200"},
-  "actuator-env": {"path": "/actuator/env", "name": "Spring Boot actuator /env", "severity": "HIGH", "match": "\"(?:activeProfiles|propertySources)\"", "cwe": "CWE-200"},
-  "actuator-heapdump": {"path": "/actuator/heapdump", "name": "Spring Boot heapdump", "severity": "CRITICAL", "match": "JAVA PROFILE", "cwe": "CWE-200"},
-  "actuator-mappings": {"path": "/actuator/mappings", "name": "Spring Boot actuator /mappings", "severity": "LOW", "match": "\"dispatcherServlets\"|\"contexts\"", "cwe": "CWE-200"},
-  "actuator": {"path": "/actuator", "name": "Spring Boot actuator index", "severity": "LOW", "match": "\"_links\"", "cwe": "CWE-200"},
-  "swagger-json": {"path": "/swagger.json", "name": "OpenAPI/Swagger definition", "severity": "INFO", "match": "\"(?:swagger|openapi)\"\\s*:", "cwe": "CWE-200"},
-  "openapi-json": {"path": "/openapi.json", "name": "OpenAPI definition", "severity": "INFO", "match": "\"openapi\"\\s*:", "cwe": "CWE-200"},
-  "api-docs": {"path": "/v2/api-docs", "name": "Swagger api-docs", "severity": "INFO", "match": "\"swagger\"\\s*:", "cwe": "CWE-200"},
-  "v3-api-docs": {"path": "/v3/api-docs", "name": "OpenAPI v3 api-docs", "severity": "INFO", "match": "\"openapi\"\\s*:", "cwe": "CWE-200"},
-  "graphql": {"path": "/graphql?query=%7B__typename%7D", "name": "GraphQL endpoint", "severity": "INFO", "match": "\"__typename\"|\"data\"\\s*:", "cwe": "CWE-200"},
-  "graphql-introspection": {"path": "/graphql?query=%7B__schema%7BqueryType%7Bname%7D%7D%7D", "name": "GraphQL introspection enabled", "severity": "LOW", "match": "\"queryType\"", "cwe": "CWE-200"},
-  "debug-vars": {"path": "/debug/vars", "name": "Go expvar debug endpoint", "severity": "MEDIUM", "match": "\"memstats\"", "cwe": "CWE-200"},
-  "debug-pprof": {"path": "/debug/pprof/", "name": "Go pprof endpoint", "severity": "MEDIUM", "match": "Types of profiles available", "cwe": "CWE-200"},
-  "django-debug": {"path": "/__wg_nonexistent_debug__", "name": "Django debug mode", "severity": "MEDIUM", "match": "You're seeing this error because you have <code>DEBUG = True</code>", "cwe": "CWE-215", "allow_404": true},
-  "laravel-debug": {"path": "/_ignition/health-check", "name": "Laravel Ignition debug", "severity": "HIGH", "match": "\"can_execute_commands\"", "cwe": "CWE-215"},
-  "telescope": {"path": "/telescope/requests", "name": "Laravel Telescope", "severity": "HIGH", "match": "Laravel Telescope|telescope", "cwe": "CWE-200"},
-  "elmah": {"path": "/elmah.axd", "name": "ELMAH error log", "severity": "HIGH", "match": "Error Log for", "cwe": "CWE-200"},
-  "trace-axd": {"path": "/trace.axd", "name": "ASP.NET trace.axd", "severity": "HIGH", "match": "Application Trace", "cwe": "CWE-200"},
-  "docker-compose": {"path": "/docker-compose.yml", "name": "Exposed docker-compose.yml", "severity": "MEDIUM", "match": "(?m)^services:|^version:\\s*['\"]?\\d", "cwe": "CWE-200"},
-  "dockerfile": {"path": "/Dockerfile", "name": "Exposed Dockerfile", "severity": "LOW", "match": "(?m)^FROM\\s+\\S+", "cwe": "CWE-200"},
-  "package-json": {"path": "/package.json", "name": "Exposed package.json", "severity": "INFO", "match": "\"(?:dependencies|devDependencies)\"\\s*:", "cwe": "CWE-200"},
-  "composer-json": {"path": "/composer.json", "name": "Exposed composer.json", "severity": "INFO", "match": "\"require\"\\s*:", "cwe": "CWE-200"},
-  "sql-dump": {"path": "/dump.sql", "name": "Exposed SQL dump", "severity": "CRITICAL", "match": "(?i)(?:CREATE TABLE|INSERT INTO|-- MySQL dump)", "cwe": "CWE-530"},
-  "backup-sql": {"path": "/backup.sql", "name": "Exposed SQL backup", "severity": "CRITICAL", "match": "(?i)(?:CREATE TABLE|INSERT INTO|-- MySQL dump)", "cwe": "CWE-530"},
-  "db-sqlite": {"path": "/db.sqlite3", "name": "Exposed SQLite database", "severity": "CRITICAL", "match": "SQLite format 3", "cwe": "CWE-530"},
-  "id-rsa": {"path": "/.ssh/id_rsa", "name": "Exposed SSH private key", "severity": "CRITICAL", "match": "BEGIN (?:RSA |OPENSSH )?PRIVATE KEY", "cwe": "CWE-522"},
-  "aws-credentials": {"path": "/.aws/credentials", "name": "Exposed AWS credentials", "severity": "CRITICAL", "match": "aws_secret_access_key", "cwe": "CWE-522"},
-  "npmrc": {"path": "/.npmrc", "name": "Exposed .npmrc", "severity": "HIGH", "match": "_authToken|_auth\\s*=", "cwe": "CWE-522"},
-  "bash-history": {"path": "/.bash_history", "name": "Exposed .bash_history", "severity": "HIGH", "match": "(?m)^(?:cd|ls|sudo|ssh|mysql|export) ", "negative": "<html", "cwe": "CWE-200"},
-  "crossdomain": {"path": "/crossdomain.xml", "name": "Permissive crossdomain.xml", "severity": "LOW", "match": "allow-access-from domain=\"\\*\"", "cwe": "CWE-942"},
-  "clientaccesspolicy": {"path": "/clientaccesspolicy.xml", "name": "Permissive clientaccesspolicy.xml", "severity": "LOW", "match": "<domain uri=\"\\*\"", "cwe": "CWE-942"},
-  "security-txt": {"path": "/.well-known/security.txt", "name": "security.txt present", "severity": "INFO", "match": "(?im)^contact:", "cwe": null},
-  "jenkins-script": {"path": "/script", "name": "Jenkins script console", "severity": "CRITICAL", "match": "Jenkins[\\s\\S]*Script Console", "cwe": "CWE-306"},
-  "kibana-status": {"path": "/api/status", "name": "Kibana status API", "severity": "LOW", "match": "\"version\"[\\s\\S]*\"build_hash\"", "cwe": "CWE-200"},
-  "elasticsearch-indices": {"path": "/_cat/indices?v", "name": "Elasticsearch indices exposed", "severity": "HIGH", "match": "health\\s+status\\s+index", "cwe": "CWE-306"},
-  "prometheus-metrics": {"path": "/metrics", "name": "Prometheus metrics exposed", "severity": "LOW", "match": "(?m)^# (?:HELP|TYPE) \\w+", "cwe": "CWE-200"},
-  "firebase-json": {"path": "/.firebase.json", "name": "Firebase config", "severity": "LOW", "match": "\"hosting\"", "cwe": "CWE-200"},
-  "directory-listing": {"path": "/", "name": "Directory listing enabled", "severity": "LOW", "match": "<title>Index of /|<h1>Directory listing for", "cwe": "CWE-548", "allow_any_status": false}
+  "git-head": {
+    "path": "/.git/HEAD",
+    "name": "Exposed Git repository",
+    "severity": "HIGH",
+    "match": "^ref: refs/heads/|^[0-9a-f]{40}\\s*$",
+    "cwe": "CWE-538"
+  },
+  "git-config": {
+    "path": "/.git/config",
+    "name": "Exposed Git config",
+    "severity": "HIGH",
+    "match": "\\[core\\]",
+    "cwe": "CWE-538"
+  },
+  "svn-entries": {
+    "path": "/.svn/entries",
+    "name": "Exposed SVN metadata",
+    "severity": "MEDIUM",
+    "match": "^(?:\\d+\\s*$|<\\?xml)",
+    "cwe": "CWE-538"
+  },
+  "svn-wcdb": {
+    "path": "/.svn/wc.db",
+    "name": "Exposed SVN wc.db",
+    "severity": "HIGH",
+    "match": "SQLite format 3",
+    "cwe": "CWE-538"
+  },
+  "hg": {
+    "path": "/.hg/requires",
+    "name": "Exposed Mercurial repository",
+    "severity": "MEDIUM",
+    "match": "revlogv1|store",
+    "cwe": "CWE-538"
+  },
+  "env": {
+    "path": "/.env",
+    "name": "Exposed .env file",
+    "severity": "CRITICAL",
+    "match": "(?m)^[A-Z][A-Z0-9_]{2,}=.+",
+    "negative": "<html",
+    "cwe": "CWE-200"
+  },
+  "env-prod": {
+    "path": "/.env.production",
+    "name": "Exposed .env.production",
+    "severity": "CRITICAL",
+    "match": "(?m)^[A-Z][A-Z0-9_]{2,}=.+",
+    "negative": "<html",
+    "cwe": "CWE-200"
+  },
+  "env-local": {
+    "path": "/.env.local",
+    "name": "Exposed .env.local",
+    "severity": "CRITICAL",
+    "match": "(?m)^[A-Z][A-Z0-9_]{2,}=.+",
+    "negative": "<html",
+    "cwe": "CWE-200"
+  },
+  "ds-store": {
+    "path": "/.DS_Store",
+    "name": "Exposed .DS_Store",
+    "severity": "LOW",
+    "match": "Bud1",
+    "cwe": "CWE-538"
+  },
+  "htpasswd": {
+    "path": "/.htpasswd",
+    "name": "Exposed .htpasswd",
+    "severity": "HIGH",
+    "match": "(?m)^[\\w.-]+:(?:\\$apr1\\$|\\$2[aby]\\$|\\{SHA\\}|[./0-9A-Za-z]{13}$)",
+    "cwe": "CWE-522"
+  },
+  "wp-config-bak": {
+    "path": "/wp-config.php.bak",
+    "name": "WordPress config backup",
+    "severity": "CRITICAL",
+    "match": "DB_PASSWORD",
+    "cwe": "CWE-530"
+  },
+  "wp-config-swp": {
+    "path": "/.wp-config.php.swp",
+    "name": "WordPress config swap file",
+    "severity": "CRITICAL",
+    "match": "DB_PASSWORD|wp-config",
+    "cwe": "CWE-530"
+  },
+  "config-php-bak": {
+    "path": "/config.php.bak",
+    "name": "PHP config backup",
+    "severity": "HIGH",
+    "match": "<\\?php",
+    "cwe": "CWE-530"
+  },
+  "web-config": {
+    "path": "/web.config",
+    "name": "Exposed web.config",
+    "severity": "HIGH",
+    "match": "<configuration",
+    "cwe": "CWE-200"
+  },
+  "phpinfo": {
+    "path": "/phpinfo.php",
+    "name": "phpinfo() page",
+    "severity": "MEDIUM",
+    "match": "<title>phpinfo\\(\\)</title>|PHP Version \\d",
+    "cwe": "CWE-200"
+  },
+  "info-php": {
+    "path": "/info.php",
+    "name": "phpinfo() page",
+    "severity": "MEDIUM",
+    "match": "<title>phpinfo\\(\\)</title>|PHP Version \\d",
+    "cwe": "CWE-200"
+  },
+  "server-status": {
+    "path": "/server-status",
+    "name": "Apache server-status",
+    "severity": "MEDIUM",
+    "match": "Apache Server Status for",
+    "cwe": "CWE-200"
+  },
+  "server-info": {
+    "path": "/server-info",
+    "name": "Apache server-info",
+    "severity": "MEDIUM",
+    "match": "Apache Server Information",
+    "cwe": "CWE-200"
+  },
+  "nginx-status": {
+    "path": "/nginx_status",
+    "name": "nginx stub_status",
+    "severity": "LOW",
+    "match": "Active connections:",
+    "cwe": "CWE-200"
+  },
+  "actuator-env": {
+    "path": "/actuator/env",
+    "name": "Spring Boot actuator /env",
+    "severity": "HIGH",
+    "match": "\"(?:activeProfiles|propertySources)\"",
+    "cwe": "CWE-200"
+  },
+  "actuator-heapdump": {
+    "path": "/actuator/heapdump",
+    "name": "Spring Boot heapdump",
+    "severity": "CRITICAL",
+    "match": "JAVA PROFILE",
+    "cwe": "CWE-200"
+  },
+  "actuator-mappings": {
+    "path": "/actuator/mappings",
+    "name": "Spring Boot actuator /mappings",
+    "severity": "LOW",
+    "match": "\"dispatcherServlets\"|\"contexts\"",
+    "cwe": "CWE-200"
+  },
+  "actuator": {
+    "path": "/actuator",
+    "name": "Spring Boot actuator index",
+    "severity": "LOW",
+    "match": "\"_links\"",
+    "cwe": "CWE-200"
+  },
+  "swagger-json": {
+    "path": "/swagger.json",
+    "name": "OpenAPI/Swagger definition",
+    "severity": "INFO",
+    "match": "\"(?:swagger|openapi)\"\\s*:",
+    "cwe": "CWE-200"
+  },
+  "openapi-json": {
+    "path": "/openapi.json",
+    "name": "OpenAPI definition",
+    "severity": "INFO",
+    "match": "\"openapi\"\\s*:",
+    "cwe": "CWE-200"
+  },
+  "api-docs": {
+    "path": "/v2/api-docs",
+    "name": "Swagger api-docs",
+    "severity": "INFO",
+    "match": "\"swagger\"\\s*:",
+    "cwe": "CWE-200"
+  },
+  "v3-api-docs": {
+    "path": "/v3/api-docs",
+    "name": "OpenAPI v3 api-docs",
+    "severity": "INFO",
+    "match": "\"openapi\"\\s*:",
+    "cwe": "CWE-200"
+  },
+  "graphql": {
+    "path": "/graphql?query=%7B__typename%7D",
+    "name": "GraphQL endpoint",
+    "severity": "INFO",
+    "match": "\"__typename\"|\"data\"\\s*:",
+    "cwe": "CWE-200"
+  },
+  "graphql-introspection": {
+    "path": "/graphql?query=%7B__schema%7BqueryType%7Bname%7D%7D%7D",
+    "name": "GraphQL introspection enabled",
+    "severity": "LOW",
+    "match": "\"queryType\"",
+    "cwe": "CWE-200"
+  },
+  "debug-vars": {
+    "path": "/debug/vars",
+    "name": "Go expvar debug endpoint",
+    "severity": "MEDIUM",
+    "match": "\"memstats\"",
+    "cwe": "CWE-200"
+  },
+  "debug-pprof": {
+    "path": "/debug/pprof/",
+    "name": "Go pprof endpoint",
+    "severity": "MEDIUM",
+    "match": "Types of profiles available",
+    "cwe": "CWE-200"
+  },
+  "django-debug": {
+    "path": "/__wg_nonexistent_debug__",
+    "name": "Django debug mode",
+    "severity": "MEDIUM",
+    "match": "You're seeing this error because you have <code>DEBUG = True</code>",
+    "cwe": "CWE-215",
+    "allow_404": true
+  },
+  "laravel-debug": {
+    "path": "/_ignition/health-check",
+    "name": "Laravel Ignition debug",
+    "severity": "HIGH",
+    "match": "\"can_execute_commands\"",
+    "cwe": "CWE-215"
+  },
+  "telescope": {
+    "path": "/telescope/requests",
+    "name": "Laravel Telescope",
+    "severity": "HIGH",
+    "match": "Laravel Telescope|telescope",
+    "cwe": "CWE-200"
+  },
+  "elmah": {
+    "path": "/elmah.axd",
+    "name": "ELMAH error log",
+    "severity": "HIGH",
+    "match": "Error Log for",
+    "cwe": "CWE-200"
+  },
+  "trace-axd": {
+    "path": "/trace.axd",
+    "name": "ASP.NET trace.axd",
+    "severity": "HIGH",
+    "match": "Application Trace",
+    "cwe": "CWE-200"
+  },
+  "docker-compose": {
+    "path": "/docker-compose.yml",
+    "name": "Exposed docker-compose.yml",
+    "severity": "MEDIUM",
+    "match": "(?m)^services:|^version:\\s*['\"]?\\d",
+    "cwe": "CWE-200"
+  },
+  "dockerfile": {
+    "path": "/Dockerfile",
+    "name": "Exposed Dockerfile",
+    "severity": "LOW",
+    "match": "(?m)^FROM\\s+\\S+",
+    "cwe": "CWE-200"
+  },
+  "package-json": {
+    "path": "/package.json",
+    "name": "Exposed package.json",
+    "severity": "INFO",
+    "match": "\"(?:dependencies|devDependencies)\"\\s*:",
+    "cwe": "CWE-200"
+  },
+  "composer-json": {
+    "path": "/composer.json",
+    "name": "Exposed composer.json",
+    "severity": "INFO",
+    "match": "\"require\"\\s*:",
+    "cwe": "CWE-200"
+  },
+  "sql-dump": {
+    "path": "/dump.sql",
+    "name": "Exposed SQL dump",
+    "severity": "CRITICAL",
+    "match": "(?i)(?:CREATE TABLE|INSERT INTO|-- MySQL dump)",
+    "cwe": "CWE-530"
+  },
+  "backup-sql": {
+    "path": "/backup.sql",
+    "name": "Exposed SQL backup",
+    "severity": "CRITICAL",
+    "match": "(?i)(?:CREATE TABLE|INSERT INTO|-- MySQL dump)",
+    "cwe": "CWE-530"
+  },
+  "db-sqlite": {
+    "path": "/db.sqlite3",
+    "name": "Exposed SQLite database",
+    "severity": "CRITICAL",
+    "match": "SQLite format 3",
+    "cwe": "CWE-530"
+  },
+  "id-rsa": {
+    "path": "/.ssh/id_rsa",
+    "name": "Exposed SSH private key",
+    "severity": "CRITICAL",
+    "match": "BEGIN (?:RSA |OPENSSH )?PRIVATE KEY",
+    "cwe": "CWE-522"
+  },
+  "aws-credentials": {
+    "path": "/.aws/credentials",
+    "name": "Exposed AWS credentials",
+    "severity": "CRITICAL",
+    "match": "aws_secret_access_key",
+    "cwe": "CWE-522"
+  },
+  "npmrc": {
+    "path": "/.npmrc",
+    "name": "Exposed .npmrc",
+    "severity": "HIGH",
+    "match": "_authToken|_auth\\s*=",
+    "cwe": "CWE-522"
+  },
+  "bash-history": {
+    "path": "/.bash_history",
+    "name": "Exposed .bash_history",
+    "severity": "HIGH",
+    "match": "(?m)^(?:cd|ls|sudo|ssh|mysql|export) ",
+    "negative": "<html",
+    "cwe": "CWE-200"
+  },
+  "crossdomain": {
+    "path": "/crossdomain.xml",
+    "name": "Permissive crossdomain.xml",
+    "severity": "LOW",
+    "match": "allow-access-from domain=\"\\*\"",
+    "cwe": "CWE-942"
+  },
+  "clientaccesspolicy": {
+    "path": "/clientaccesspolicy.xml",
+    "name": "Permissive clientaccesspolicy.xml",
+    "severity": "LOW",
+    "match": "<domain uri=\"\\*\"",
+    "cwe": "CWE-942"
+  },
+  "security-txt": {
+    "path": "/.well-known/security.txt",
+    "name": "security.txt present",
+    "severity": "INFO",
+    "match": "(?im)^contact:",
+    "cwe": null
+  },
+  "jenkins-script": {
+    "path": "/script",
+    "name": "Jenkins script console",
+    "severity": "CRITICAL",
+    "match": "Jenkins[\\s\\S]*Script Console",
+    "cwe": "CWE-306"
+  },
+  "kibana-status": {
+    "path": "/api/status",
+    "name": "Kibana status API",
+    "severity": "LOW",
+    "match": "\"version\"[\\s\\S]*\"build_hash\"",
+    "cwe": "CWE-200"
+  },
+  "elasticsearch-indices": {
+    "path": "/_cat/indices?v",
+    "name": "Elasticsearch indices exposed",
+    "severity": "HIGH",
+    "match": "health\\s+status\\s+index",
+    "cwe": "CWE-306"
+  },
+  "prometheus-metrics": {
+    "path": "/metrics",
+    "name": "Prometheus metrics exposed",
+    "severity": "LOW",
+    "match": "(?m)^# (?:HELP|TYPE) \\w+",
+    "cwe": "CWE-200"
+  },
+  "firebase-json": {
+    "path": "/.firebase.json",
+    "name": "Firebase config",
+    "severity": "LOW",
+    "match": "\"hosting\"",
+    "cwe": "CWE-200"
+  },
+  "directory-listing": {
+    "path": "/",
+    "name": "Directory listing enabled",
+    "severity": "LOW",
+    "match": "<title>Index of /|<h1>Directory listing for",
+    "cwe": "CWE-548",
+    "allow_any_status": false
+  },
+  "swagger-ui": {
+    "path": "/api-docs/",
+    "name": "Swagger UI / API documentation exposed",
+    "severity": "INFO",
+    "match": "swagger-ui|Swagger UI",
+    "cwe": "CWE-200"
+  },
+  "swagger-ui-html": {
+    "path": "/swagger-ui.html",
+    "name": "Swagger UI / API documentation exposed",
+    "severity": "INFO",
+    "match": "swagger-ui|Swagger UI",
+    "cwe": "CWE-200"
+  }
 }

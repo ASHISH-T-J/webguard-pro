@@ -16,6 +16,24 @@ from urllib.parse import parse_qs, urlsplit
 
 PASSWD = "root:x:0:0:root:/root:/bin/bash\ndaemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\n"
 ITEMS = {"1": "Blue widget", "2": "Red widget", "3": "Green widget"}
+USERS = {1: {"id": 1, "email": "alice@shop.test", "phone": "555-0101", "password": "0192023a7bbd73250516f069df18b500"},
+         2: {"id": 2, "email": "bob@shop.test", "phone": "555-0102", "password": "5f4dcc3b5aa765d61d8327deb882cf99"},
+         3: {"id": 3, "email": "carol@shop.test", "phone": "555-0103", "password": "e10adc3949ba59abbe56e057f20f883e"}}
+
+
+def _jwt(claims: dict, secret: str = "secret") -> str:
+    import base64
+    import hashlib
+    import hmac
+    import json as _json
+
+    enc = lambda d: base64.urlsafe_b64encode(_json.dumps(d).encode()).rstrip(b"=").decode()  # noqa: E731
+    head = enc({"alg": "HS256", "typ": "JWT"}) + "." + enc(claims)
+    sig = base64.urlsafe_b64encode(hmac.new(secret.encode(), head.encode(), hashlib.sha256).digest()).rstrip(b"=").decode()
+    return head + "." + sig
+
+
+TOKEN = _jwt({"sub": "1", "role": "customer"})
 
 INDEX = """<html><head><title>Shop</title>
 <script src="/static/app.js"></script></head><body>
@@ -26,12 +44,22 @@ INDEX = """<html><head><title>Shop</title>
 <a href="/go?next=/home">go</a> <a href="/safe/go?next=/home">safe go</a>
 <a href="/ping?host=127.0.0.1">ping</a> <a href="/safe/ping?host=127.0.0.1">safe ping</a>
 <a href="/profile?color=red">profile</a> <a href="/news?id=2">news</a> <a href="/logout">logout</a>
+<a href="/users/search?name=alice">user search</a> <a href="/safe/users/search?name=alice">safe user search</a>
+<a href="/reset?email=a@b.c">reset</a> <a href="/safe/reset?email=a@b.c">safe reset</a>
+<a href="/admin">admin</a> <a href="/safe/admin">safe admin</a> <a href="/dom">dom</a> <a href="/safe/dom">safe dom</a>
+<form action="/profile/update" method="post"><input name="nickname" value="bob"><input type="submit"></form>
 <form action="/comment" method="post"><input name="author" value="anon"><textarea name="body"></textarea>
 <input type="hidden" name="csrf_token" value="abc123"><input type="submit" value="Send"></form>
 </body></html>"""
 
 APP_JS = """const API = "/api/v1/users?id=1"; const KEY = "AKIAIOSFODNN7ABCDXYZ";
 fetch('/api/v1/status'); // internal endpoint
+const u1 = `${host}/api/users/1`, u2 = "/safe/api/users/1", gql = "/graphql";
+const cfg1 = "/api/admin/config", cfg2 = "/safe/api/admin/config";
+function login(b) { return http.post("/api/login", b) }
+function safeLogin(b) { return http.post("/safe/api/login", b) }
+function importXml(x) { return http.post("/api/xml", x) }
+function safeImportXml(x) { return http.post("/safe/api/xml", x) }
 """
 
 
@@ -65,10 +93,46 @@ class Handler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(data)
 
-    def do_POST(self):
+    def do_POST(self):  # noqa: C901 - test fixture
         length = int(self.headers.get("Content-Length", 0))
-        form = parse_qs(self.rfile.read(length).decode(), keep_blank_values=True)
-        if urlsplit(self.path).path == "/comment":
+        raw = self.rfile.read(length).decode(errors="replace")
+        path = urlsplit(self.path).path
+        if path in ("/api/login", "/safe/api/login"):
+            import json as _json
+            try:
+                body = _json.loads(raw)
+            except ValueError:
+                return self._send('{"error": "bad json"}', 400, "application/json")
+            email = body.get("email")
+            ok = email == "alice@shop.test" and body.get("password") == "admin123"
+            if path == "/api/login" and isinstance(email, str):
+                # vulnerable: SELECT * FROM users WHERE email = '<email>' AND password = '...'
+                if email.count("'") % 2 == 1 and re.search(r"(?i)'\s*(?:or\s+'?1'?\s*=\s*'?1|--|#)", email):
+                    ok = True
+                elif email.count("'") % 2 == 1:
+                    return self._send("SQLITE_ERROR: unrecognized token", 500, "text/plain")
+            if ok:
+                return self._send(_json.dumps({"authentication": {"token": TOKEN, "umail": "alice@shop.test"}}),
+                                  200, "application/json")
+            return self._send('{"error": "Invalid email or password."}', 401, "application/json")
+        if path in ("/api/xml", "/safe/api/xml"):
+            if path == "/api/xml" and re.search(r'<!ENTITY\s+(\w+)\s+SYSTEM\s+"file:///etc/passwd"', raw):
+                return self._send(f"<result>{PASSWD}</result>", 200, "application/xml")
+            return self._send("<result>parsed</result>", 200, "application/xml")
+        if path == "/graphql":
+            import json as _json
+            body = _json.loads(raw or "{}")
+            def answer(q):
+                if "__schema" in q.get("query", ""):
+                    return {"data": {"__schema": {"queryType": {"name": "Query"},
+                                                  "types": [{"name": "Query"}, {"name": "User"}, {"name": "AdminMutation"}]}}}
+                return {"data": {"__typename": "Query"}}
+            out = [answer(q) for q in body] if isinstance(body, list) else answer(body)
+            return self._send(_json.dumps(out), 200, "application/json")
+        if path == "/profile/update":
+            return self._send("<html><body>Saved</body></html>")
+        form = parse_qs(raw, keep_blank_values=True)
+        if path == "/comment":
             body = form.get("body", [""])[0]
             # vulnerable: raw HTML output
             return self._send(f"<html><body><p>Thanks! Your comment:</p><div>{body}</div></body></html>")
@@ -80,7 +144,52 @@ class Handler(BaseHTTPRequestHandler):
         p = u.path
         page = lambda body, title="Shop": f"<html><head><title>{title}</title></head><body>{body}<p>Rendered at {time.time()}</p></body></html>"  # noqa: E731
         if p == "/":
+            if self.headers.get("X-Original-URL") == "/admin":  # vulnerable front-end ACL bypass
+                return self._send(page("<h1>Admin panel</h1><table><tr><td>alice</td><td>delete</td></tr></table>", "Admin"))
             return self._send(INDEX, headers={"Set-Cookie": "sessionid=abc; Path=/", "Server": "nginx/1.18.0"})
+        if p in ("/admin", "/safe/admin"):
+            return self._send(page("<h1>403 Forbidden</h1>", "Forbidden"), 403)
+        if p in ("/api/admin/config", "/safe/api/admin/config"):
+            if p.startswith("/safe/"):
+                return self._send('{"error": "authentication required"}', 401, "application/json")
+            return self._send('{"smtp": {"host": "mail.internal", "user": "ops"}, "featureFlags": {"debug": true}}',
+                              ctype="application/json")
+        if p == "/graphql":
+            return self._send('{"errors": [{"message": "use POST"}]}', 400, "application/json")
+        if p in ("/users/search", "/safe/users/search"):
+            import json as _json
+            ne = q.get("name[$ne]")
+            if p == "/users/search" and ne is not None:
+                hits = [u for u in USERS.values() if u["email"].split("@")[0] != ne]
+            else:
+                hits = [u for u in USERS.values() if u["email"].split("@")[0] == q.get("name")]
+            return self._send(_json.dumps([{"id": u["id"], "name": u["email"].split("@")[0]} for u in hits]),
+                              ctype="application/json")
+        if p.startswith(("/api/users/", "/safe/api/users/")):
+            import json as _json
+            try:
+                uid = int(p.rsplit("/", 1)[1])
+            except ValueError:
+                return self._send("{}", 404, "application/json")
+            if p.startswith("/safe/") and uid != 1:
+                return self._send('{"error": "forbidden"}', 403, "application/json")
+            user = USERS.get(uid)
+            if user is None:
+                return self._send("{}", 404, "application/json")
+            data = dict(user) if not p.startswith("/safe/") else {k: v for k, v in user.items() if k != "password"}
+            return self._send(_json.dumps(data), ctype="application/json")
+        if p in ("/reset", "/safe/reset"):
+            host = "shop.test"  # safe: canonical host from configuration
+            if p == "/reset":  # vulnerable: trusts client-controlled host headers
+                host = self.headers.get("X-Forwarded-Host") or self.headers.get("Host")
+            hdrs = {"Cache-Control": "public, max-age=60"} if p == "/reset" else {}
+            return self._send(page(f'<p>Reset link sent. <a href="http://{html.escape(host)}/reset/confirm?t=1">confirm</a></p>'),
+                              headers=hdrs)
+        if p in ("/dom", "/safe/dom"):
+            sink = "innerHTML" if p == "/dom" else "textContent"
+            js = f"document.getElementById('out').{sink} = decodeURIComponent(location.hash.slice(1));"
+            return self._send(f"<html><body><div id=out></div><script>{js}</script></body></html>",
+                              headers={"Set-Cookie": f"auth={TOKEN}; Path=/; HttpOnly; SameSite=Lax"})
         if p == "/static/app.js":
             return self._send(APP_JS, ctype="application/javascript")
         if p == "/api/v1/users":

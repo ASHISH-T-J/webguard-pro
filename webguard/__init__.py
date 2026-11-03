@@ -3,4 +3,4 @@
 Only use against systems you own or are explicitly authorized to test.
 """
 
-__version__ = "2.0.0"
+__version__ = "3.0.0"

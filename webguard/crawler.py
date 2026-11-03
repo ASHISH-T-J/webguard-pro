@@ -24,10 +24,14 @@ SKIP_EXT = re.compile(
     r"rar|7z|exe|dmg|iso|bin|docx?|xlsx?|pptx?|css|map)$",
     re.I,
 )
-JS_ENDPOINT = re.compile(
-    r"""(?:"|'|`)((?:https?://[^\s"'`<>]{4,200})|(?:/(?:api|v\d|graphql|rest|internal|admin|auth|user|account)[^\s"'`<>]{0,150})|"""
-    r"""(?:/[a-zA-Z0-9_\-]{2,}/[a-zA-Z0-9_\-/.]{1,150}\.(?:php|aspx?|jsp|json|action|do)(?:\?[^\s"'`<>]*)?))(?:"|'|`)"""
-)
+TEMPLATE_EXPR = re.compile(r"\$\{[^}]{0,120}\}")
+PATHLIKE = re.compile(r"^(?:https?://[A-Za-z0-9.\-:]+)?\.?/[A-Za-z0-9_\-./~%@:]*(?:\?[^\s\"'<>`]*)?$")
+JS_NOISE = re.compile(r"(?i)\.(?:png|jpe?g|gif|svg|ico|css|woff2?|ttf|eot|mp[34]|webp|map)(?:$|\?)|^/(?:/|\*)|^/[a-z]?$|"
+                      r"^/(?:node_modules|assets/i18n)/")
+JS_WRITE = re.compile(r"""\.(post|put|patch|delete)\(\s*(?:`([^`]{1,200})`|"([^"]{1,200})"|'([^']{1,200})'|[\w$.]+\s*\+\s*["'`]([^"'`]{1,200})["'`])""",
+                      re.I)
+SPA_ROUTE = re.compile(r"""\bpath\s*:\s*["'`]([A-Za-z0-9_\-/:]{1,60})["'`]\s*,\s*(?:component|loadComponent|loadChildren|redirectTo|canActivate|element)""")
+ANCHORED = re.compile(r"""`\$\{[^}`]{1,80}\}(/[^`\s]{1,250})`|(["'`])(\.?/[A-Za-z_][^"'`\s<>]{0,250})\2""")
 NUM_SEGMENT = re.compile(r"/(?:\d+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{24,})(?=/|$)", re.I)
 
 
@@ -47,6 +51,8 @@ class CrawlResult:
     js_files: set[str] = field(default_factory=set)
     js_endpoints: set[str] = field(default_factory=set)
     urls_with_params: set[str] = field(default_factory=set)
+    api_writes: set[tuple[str, str]] = field(default_factory=set)  # (METHOD, url) seen in JS http calls
+    spa_routes: set[str] = field(default_factory=set)  # client-side routes (#/route) for DOM testing
 
 
 def normalize_url(url: str) -> str:
@@ -204,16 +210,81 @@ class Crawler:
             self.result.forms.append(Form(action, method, inputs, form.get("enctype") or "", page))
 
     def _mine_js(self, text: str, source: str) -> list[str]:
-        out = []
-        for m in JS_ENDPOINT.finditer(text[:2_000_000]):
-            candidate = m.group(1)
-            if "{" in candidate or "$" in candidate or " " in candidate:
+        """Extract endpoints from JS: string/template literals that look like paths, write calls, SPA routes."""
+        text = text[:3_000_000]
+        out: list[str] = []
+
+        def literal(raw: str) -> str | None:
+            raw = raw.strip()
+            if raw.startswith("${"):  # `${this.host}/rest/x` -> /rest/x
+                raw = TEMPLATE_EXPR.sub("", raw, count=1)
+            raw = TEMPLATE_EXPR.sub("1", raw)
+            if not PATHLIKE.match(raw) or JS_NOISE.search(raw) or len(raw) < 3:
+                return None
+            return raw
+
+        candidates = [r for r in js_strings(text) if "/" in r]
+        candidates += [m.group(1) or m.group(3) for m in ANCHORED.finditer(text)]
+        for raw in dict.fromkeys(candidates):
+            cand = literal(raw)
+            if not cand:
                 continue
-            full = normalize_url(urljoin(source, candidate))
-            if self.client.scope.in_scope(full):
+            full = normalize_url(urljoin(source, cand))
+            if self.client.scope.in_scope(full) and full not in self.result.js_endpoints:
                 self.result.js_endpoints.add(full)
                 out.append(full)
+        for m in JS_WRITE.finditer(text):
+            raw = next((g for g in m.groups()[1:] if g), None)
+            cand = literal(raw) if raw else None
+            if cand:
+                full = normalize_url(urljoin(source, cand))
+                if self.client.scope.in_scope(full):
+                    self.result.api_writes.add((m.group(1).upper(), full))
+        for m in SPA_ROUTE.finditer(text):
+            route = m.group(1)
+            if ":" not in route and route not in ("**", ""):
+                self.result.spa_routes.add(route)
         return out
+
+
+def js_strings(text: str, max_len: int = 400):
+    """Yield JS string/template literal contents, respecting escapes and ${...} nesting.
+
+    A real tokenizer (not a regex) so quotes in minified one-line bundles pair correctly.
+    """
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch in "\"'`":
+            quote, j, depth, buf = ch, i + 1, 0, []
+            while j < n:
+                c = text[j]
+                if c == "\\":
+                    buf.append(text[j:j + 2])
+                    j += 2
+                    continue
+                if quote == "`" and c == "$" and j + 1 < n and text[j + 1] == "{":
+                    depth += 1
+                elif quote == "`" and c == "}" and depth:
+                    depth -= 1
+                elif c == quote and not depth:
+                    break
+                elif c == "\n" and quote != "`":
+                    break
+                buf.append(c)
+                j += 1
+            if j < n and text[j] == quote:
+                if j - i <= max_len:  # long literals (inline templates) are skipped, but fully consumed
+                    yield "".join(buf)
+                i = j + 1
+                continue
+            i += 1
+            continue
+        if ch == "/" and i + 1 < n and text[i + 1] == "/" and (i == 0 or text[i - 1] in " \n;{}"):
+            nl = text.find("\n", i)  # line comment
+            i = n if nl == -1 else nl
+            continue
+        i += 1
 
 
 def _default_for(itype: str, name: str) -> str:

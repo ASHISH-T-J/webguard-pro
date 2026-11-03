@@ -7,7 +7,8 @@ RUN apt-get update \
 WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY webguard ./webguard
-RUN pip install --no-cache-dir ".[all]"
+RUN pip install --no-cache-dir ".[all]" \
+ && python -m playwright install --with-deps chromium   # headless browser for DOM XSS verification
 
 # reports and the findings database live in mounted volumes
 VOLUME ["/reports", "/root/.webguard"]

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import shlex
 import time
 from dataclasses import dataclass
@@ -69,6 +70,28 @@ class Resp:
         return "html" in self.content_type or (not self.content_type and "<html" in self.text[:500].lower())
 
 
+_WAF_HINT = re.compile(r"(?i)request (?:was )?(?:blocked|rejected)|web application firewall|access denied|"
+                       r"not acceptable|incident id|support id|ray id|mod_security|security policy")
+
+
+async def _guard_location(response: httpx.Response) -> None:
+    """httpx builds the next redirect request eagerly, even with follow_redirects=False, and raises
+    on malformed Location values (``C:\\x``, ``http://[bad``). Attack payloads produce exactly such
+    headers, so stash invalid ones and restore them on the Resp snapshot instead of crashing."""
+    loc = response.headers.get("location")
+    if loc is None:
+        return
+    try:  # same steps as httpx.Client._redirect_url
+        url = httpx.URL(loc)
+        if url.scheme and not url.host:
+            url = url.copy_with(host=response.request.url.host)
+        if url.is_relative_url:
+            response.request.url.join(url)
+    except Exception:
+        response.headers["x-webguard-location"] = loc
+        del response.headers["location"]
+
+
 class HttpClient:
     def __init__(self, config: ScanConfig, scope: Scope, transport: httpx.AsyncBaseTransport | None = None):
         self.config = config
@@ -85,13 +108,15 @@ class HttpClient:
             follow_redirects=False,
             limits=httpx.Limits(max_connections=config.concurrency * 2, max_keepalive_connections=config.concurrency),
         )
+        kwargs["event_hooks"] = {"response": [_guard_location]}
         if transport is not None:
             kwargs["transport"] = transport
         elif config.proxy:
             kwargs["proxy"] = config.proxy
         self._client = httpx.AsyncClient(**kwargs)
         self._cache: dict[tuple, Resp] = {}
-        self.stats = {"requests": 0, "errors": 0, "blocked_out_of_scope": 0, "cache_hits": 0}
+        self.stats = {"requests": 0, "errors": 0, "blocked_out_of_scope": 0, "cache_hits": 0, "rate_limited": 0,
+                      "server_errors": 0, "waf_blocks": 0}
 
     async def __aenter__(self) -> HttpClient:
         return self
@@ -110,6 +135,7 @@ class HttpClient:
         params: dict[str, str] | None = None,
         data: dict[str, str] | None = None,
         json: Any = None,
+        content: str | bytes | None = None,
         headers: dict[str, str] | None = None,
         follow_redirects: bool = False,
         cache: bool = False,
@@ -130,8 +156,8 @@ class HttpClient:
                 self.stats["cache_hits"] += 1
                 return self._cache[key]
 
-        result = await self._send_once(method, url, params=params, data=data, json=json, headers=headers,
-                                       timeout=timeout)
+        result = await self._send_once(method, url, params=params, data=data, json=json, content=content,
+                                       headers=headers, timeout=timeout)
         history: list[str] = []
         while follow_redirects and result is not None and result.status in (301, 302, 303, 307, 308):
             location = result.headers.get("location")
@@ -143,16 +169,17 @@ class HttpClient:
                 break
             history.append(result.url)
             if result.status in (301, 302, 303) and method.upper() != "HEAD":
-                method, data, json = "GET", None, None
-            result = await self._send_once(method, nxt, headers=headers, timeout=timeout)
+                method, data, json, content = "GET", None, None, None
+            result = await self._send_once(method, nxt, data=data, json=json, content=content, headers=headers,
+                                           timeout=timeout)
         if result is not None and history:
             result.history = tuple(history)
         if key is not None and result is not None:
             self._cache[key] = result
         return result
 
-    async def _send_once(self, method: str, url: str, *, params=None, data=None, json=None, headers=None,
-                         timeout: float | None = None) -> Resp | None:
+    async def _send_once(self, method: str, url: str, *, params=None, data=None, json=None, content=None,
+                         headers=None, timeout: float | None = None) -> Resp | None:
         attempt = 0
         while True:
             attempt += 1
@@ -167,12 +194,16 @@ class HttpClient:
                         params=params,
                         data=data,
                         json=json,
+                        content=content,
                         headers=headers,
                         follow_redirects=False,
                         timeout=timeout if timeout is not None else httpx.USE_CLIENT_DEFAULT,
                     )
                     text = resp.text
                     elapsed = time.perf_counter() - start
+                except (httpx.InvalidURL, httpx.UnsupportedProtocol) as exc:
+                    log.debug("unsendable request %s %s: %s", method, url, exc)
+                    return None
                 except (httpx.TransportError, httpx.DecodingError) as exc:
                     elapsed = time.perf_counter() - start
                     if isinstance(exc, httpx.TimeoutException) and timeout is not None:
@@ -184,6 +215,12 @@ class HttpClient:
                     self.stats["errors"] += 1
                     log.debug("request failed %s %s: %s", method, url, exc)
                     return None
+            if resp.status_code == 429:
+                self.stats["rate_limited"] += 1
+            elif resp.status_code >= 500:
+                self.stats["server_errors"] += 1
+            elif resp.status_code in (403, 406, 419, 501) and attempt == 1 and _WAF_HINT.search(text[:3000]):
+                self.stats["waf_blocks"] += 1
             if resp.status_code == 429 and attempt <= self.config.retries:
                 retry_after = resp.headers.get("retry-after", "")
                 await asyncio.sleep(min(float(retry_after), 30.0) if retry_after.isdigit() else 2.0 * attempt)
@@ -192,10 +229,14 @@ class HttpClient:
                 body = resp.request.content.decode(errors="replace")[:4000] if resp.request.content else None
             except httpx.RequestNotRead:
                 body = None
+            headers = resp.headers
+            if "x-webguard-location" in headers:
+                headers = httpx.Headers(headers)
+                headers["location"] = headers.pop("x-webguard-location")
             return Resp(
                 url=str(resp.url),
                 status=resp.status_code,
-                headers=resp.headers,
+                headers=headers,
                 text=text,
                 elapsed=elapsed,
                 method=method.upper(),
@@ -213,9 +254,10 @@ class HttpClient:
             return None
 
     def curl(self, method: str, url: str, params: dict | None = None, data: dict | None = None,
-             json_body: Any = None, headers: dict | None = None) -> str:
+             json_body: Any = None, headers: dict | None = None, content: str | None = None) -> str:
         """Build a reproducible curl command (for bug reports)."""
-        req = self._client.build_request(method, url, params=params, data=data, json=json_body, headers=headers)
+        req = self._client.build_request(method, url, params=params, data=data, json=json_body, headers=headers,
+                                         content=content)
         cmd = ["curl", "-sk", "-X", method.upper(), str(req.url)]
         for name, value in (headers or {}).items():
             cmd += ["-H", f"{name}: {value}"]
@@ -227,3 +269,8 @@ class HttpClient:
                 cmd += ["-H", f"Content-Type: {ctype}"]
             cmd += ["--data-raw", req.content.decode(errors="replace")]
         return " ".join(shlex.quote(c) for c in cmd)
+
+    def slow_down(self, factor: float = 0.5, minimum: float = 1.0) -> float:
+        """Reduce the request rate (called by the agent when it observes 429s / WAF blocks)."""
+        self._bucket.rate = max(minimum, self._bucket.rate * factor)
+        return self._bucket.rate

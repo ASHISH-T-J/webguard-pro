@@ -39,14 +39,31 @@ def _found(result, base, check, path, param=None):
     ("redirect", "/go", "next"),
     ("crlf", "/go", "next"),
     ("exposure", "/.git/HEAD", None),
-    ("secrets", "/static/app.js", None),
+    ("secrets", "/", None),                   # keyed per host; source page in evidence
+    # classes added in v3
+    ("auth", "/api/login", "email"),          # SQLi login bypass on a JSON API found in JS
+    ("nosqli", "/users/search", "name"),
+    ("xxe", "/api/xml", None),
+    ("access", "/admin", None),               # X-Original-URL bypass
+    ("host_header", "/reset", None),          # cache poisoning via X-Forwarded-Host
+    ("idor", "/api/users/1", None),
+    ("data_exposure", "/api/users/1", None),  # MD5 password hashes in API
+    ("graphql", "/graphql", None),
+    ("csrf", "/", None),
+    ("dom_xss", "/dom", None),                # verified in headless Chromium
+    ("jwt", "/", None),                       # HS256 token signed with "secret"
+    ("access", "/api/admin/config", None),    # admin API answering anonymous requests
 ])
 def test_detects_vulnerability(scan_result, check, path, param):
     base, result = scan_result
+    if check == "dom_xss":
+        pytest.importorskip("playwright")
     assert _found(result, base, check, path, param), f"{check} not detected at {path}"
 
 
-@pytest.mark.parametrize("path", ["/safe/search", "/safe/item", "/safe/view", "/safe/greet", "/safe/go", "/safe/ping"])
+@pytest.mark.parametrize("path", ["/safe/search", "/safe/item", "/safe/view", "/safe/greet", "/safe/go", "/safe/ping",
+                                  "/safe/api/login", "/safe/users/search", "/safe/api/xml", "/safe/admin",
+                                  "/safe/reset", "/safe/api/users/1", "/safe/dom", "/safe/api/admin/config"])
 def test_no_false_positives_on_safe_twins(scan_result, path):
     base, result = scan_result
     hits = [f for f in result.findings if f.url.replace(base, "") == path]
@@ -68,5 +85,28 @@ def test_findings_have_reproduction_and_ml_score(scan_result):
     _, result = scan_result
     for f in result.findings:
         assert f.ml_score is not None
-        if f.parameter:
-            assert f.request and f.request.startswith("curl ")
+        if f.parameter:  # DOM XSS needs a browser to reproduce; everything else has a curl command
+            assert f.request and f.request.startswith("open in browser: " if f.check == "dom_xss" else "curl ")
+
+
+def test_active_findings_are_independently_verified(scan_result):
+    _, result = scan_result
+    active = [f for f in result.findings if f.check in ("sqli", "xss", "ssti", "lfi", "cmdi", "redirect", "nosqli")]
+    assert active and all("verified" in f.tags for f in active)
+
+
+def test_assessment_analysis_outputs(scan_result):
+    _, result = scan_result
+    titles = {c["title"] for c in result.chains}
+    assert "Administrative access: authentication bypass" in titles
+    assert "Privilege escalation: forge JWTs with cracked signing secret" in titles
+    assert result.narrative["executive_summary"].startswith("WebGuard assessed")
+    assert result.coverage["WSTG-INPV-05"] == "vulnerable" and result.coverage["WSTG-ATHN-04"] == "vulnerable"
+    assert [t.phase for t in result.trace][:2] == ["recon", "recon"] and result.trace[-1].phase == "analysis"
+    assert len(result.issues) <= len(result.findings)
+
+
+def test_secret_reported_once_per_host_with_source(scan_result):
+    _, result = scan_result
+    aws = [f for f in result.findings if f.title == "Exposed secret: AWS Access Key ID"]
+    assert len(aws) == 1 and "/static/app.js" in aws[0].evidence

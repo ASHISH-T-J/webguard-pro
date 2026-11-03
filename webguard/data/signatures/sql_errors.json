@@ -14,7 +14,9 @@
     "MySqlException",
     "SQLSTATE\\[\\d+\\]: Syntax error or access violation"
   ],
-  "MariaDB": ["MariaDB server version for the right syntax"],
+  "MariaDB": [
+    "MariaDB server version for the right syntax"
+  ],
   "PostgreSQL": [
     "PostgreSQL.*?ERROR",
     "Warning.*?\\Wpg_",
@@ -27,7 +29,9 @@
     "PostgreSQL query failed",
     "Pdo[./_\\\\]Pgsql",
     "PSQLException",
-    "unterminated quoted string at or near"
+    "unterminated quoted string at or near",
+    "error: syntax error at or near",
+    "error: unterminated quoted"
   ],
   "Microsoft SQL Server": [
     "Driver.*? SQL[\\-\\_\\ ]*Server",
@@ -91,7 +95,10 @@
     "org\\.sqlite\\.JDBC",
     "Pdo[./_\\\\]Sqlite",
     "SQLiteException",
-    "unrecognized token: \""
+    "unrecognized token: \"",
+    "SQLITE_ERROR(?::|\\b)",
+    "SQLITE_CONSTRAINT",
+    "near \\S+: syntax error"
   ],
   "Sybase": [
     "Warning.*?\\Wsybase_",
@@ -101,13 +108,45 @@
     "Sybase\\.Data\\.AseClient",
     "com\\.sybase\\.jdbc"
   ],
-  "Informix": ["Warning.*?\\Wifx_", "Exception.*?Informix", "Informix ODBC Driver", "ODBC Informix driver", "com\\.informix\\.jdbc", "weblogic\\.jdbc\\.informix", "Pdo[./_\\\\]Informix", "IfxException"],
-  "Firebird": ["Dynamic SQL Error", "Warning.*?\\Wibase_", "org\\.firebirdsql\\.jdbc", "Pdo[./_\\\\]Firebird"],
-  "SAP MaxDB": ["SQL error.*?POS([0-9]+)", "Warning.*?\\Wmaxdb_", "DriverSapDB", "-3014.*?Invalid end of SQL statement", "com\\.sap\\.dbtech\\.jdbc", "\\[-3008\\].*?: Invalid keyword or missing delimiter"],
-  "HSQLDB": ["Unexpected end of command in statement \\[", "Unexpected token.*?in statement \\[", "org\\.hsqldb\\.jdbc"],
-  "H2": ["org\\.h2\\.jdbc", "\\[42000-192\\]"],
-  "CockroachDB": ["crdb_internal"],
-  "ClickHouse": ["Code: \\d+\\. DB::Exception:"],
+  "Informix": [
+    "Warning.*?\\Wifx_",
+    "Exception.*?Informix",
+    "Informix ODBC Driver",
+    "ODBC Informix driver",
+    "com\\.informix\\.jdbc",
+    "weblogic\\.jdbc\\.informix",
+    "Pdo[./_\\\\]Informix",
+    "IfxException"
+  ],
+  "Firebird": [
+    "Dynamic SQL Error",
+    "Warning.*?\\Wibase_",
+    "org\\.firebirdsql\\.jdbc",
+    "Pdo[./_\\\\]Firebird"
+  ],
+  "SAP MaxDB": [
+    "SQL error.*?POS([0-9]+)",
+    "Warning.*?\\Wmaxdb_",
+    "DriverSapDB",
+    "-3014.*?Invalid end of SQL statement",
+    "com\\.sap\\.dbtech\\.jdbc",
+    "\\[-3008\\].*?: Invalid keyword or missing delimiter"
+  ],
+  "HSQLDB": [
+    "Unexpected end of command in statement \\[",
+    "Unexpected token.*?in statement \\[",
+    "org\\.hsqldb\\.jdbc"
+  ],
+  "H2": [
+    "org\\.h2\\.jdbc",
+    "\\[42000-192\\]"
+  ],
+  "CockroachDB": [
+    "crdb_internal"
+  ],
+  "ClickHouse": [
+    "Code: \\d+\\. DB::Exception:"
+  ],
   "Generic": [
     "Hibernate.*?QuerySyntaxException",
     "org\\.hibernate\\.exception",
@@ -118,6 +157,9 @@
     "SequelizeDatabaseError",
     "knex: .*? - syntax error",
     "PDOException: SQLSTATE",
-    "Error Executing Database Query"
+    "Error Executing Database Query",
+    "QueryFailedError",
+    "PrismaClientKnownRequestError",
+    "sqlalchemy\\.exc\\.\\w+Error"
   ]
 }

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from webguard.config import DATA_DIR
 from webguard.detection import anomaly
 from webguard.detection.baseline import features, similarity
@@ -124,3 +126,40 @@ async def discover_params(ctx: Context, url: str, method: str = "GET", known: di
             detection=ANOMALY, tags=["hunting", "param-discovery"],
         ))
     return points
+
+
+async def content_discovery(ctx: Context, root: str, words: list[str]) -> list[tuple[str, int]]:  # noqa: C901
+    """Soft-404-aware path brute force (ffuf-style auto-calibration, built in).
+
+    Returns [(url, status)] for paths that are not the site's generic not-found / SPA fallback page.
+    """
+    from webguard.detection.checks.host import soft404
+
+    fps = await soft404(ctx, root)
+    fp_locations = {fp.headers.get("location") for fp in fps if fp.headers.get("location")}
+    found: list[tuple[str, int]] = []
+
+    async def probe(word: str) -> None:
+        url = f"{root}/{word.lstrip('/')}"
+        r = await ctx.client.safe_get(url)
+        if r is None or r.status in (404, 400, 405, 410, 429, 500, 502, 503):
+            return
+        if r.status in (301, 302, 303, 307, 308) and r.headers.get("location", "") in fp_locations:
+            return  # redirects exactly where random paths redirect (e.g. to the login page)
+        for fp in fps:
+            if fp.status == r.status and similarity(fp.text, r.text, [word]) > 0.9:
+                return  # same as a random path -> soft 404 / SPA catch-all
+        found.append((url, r.status))
+
+    await asyncio.gather(*(probe(w) for w in words))
+    if found:
+        listing = ", ".join(f"/{u.split('/', 3)[-1]} ({s})" for u, s in sorted(found)[:40])
+        ctx.report(Finding(
+            check="exposure", title="Unlinked content discovered", severity=Severity.INFO, confidence=Confidence.FIRM,
+            url=root + "/#content-discovery", evidence=f"{len(found)} path(s): {listing}",
+            description="Paths not linked from the application respond with real content. Review them for "
+                        "sensitive files, admin functionality and forgotten endpoints.",
+            remediation="Remove unused content from production and protect administrative paths.",
+            cwe="CWE-538", detection=ANOMALY, tags=["hunting", "content-discovery"],
+        ))
+    return found

@@ -80,6 +80,9 @@ def test_signature_db_loads_and_matches():
     secrets = db.match_secrets('key="AKIAIOSFODNN7ABCDXYZ" token="ghp_' + "a1B2" * 9 + '"')
     assert {m.name for m in secrets} >= {"AWS Access Key ID", "GitHub Token"}
     assert not db.match_secrets('api_key = "your_api_key_here_xxxxxxxx"')
+    # minified-code fragments are not passwords (real FP seen in swagger-ui-bundle.js on Juice Shop)
+    assert not db.match_secrets('{password:"),$?Re(t).ent(",x:1}')
+    assert db.match_secrets('db_password = "Tr0ub4dor&3xyz"')[0].name == "Generic Password Assignment"
     tech = db.fingerprint_tech({"Server": "nginx/1.25.3", "X-Powered-By": "PHP/8.2.1"}, ["PHPSESSID"],
                                '<meta name="generator" content="WordPress 6.4.2">')
     assert tech["nginx"] == "1.25.3" and tech["PHP"] == "8.2.1" and tech["WordPress"] == "6.4.2"

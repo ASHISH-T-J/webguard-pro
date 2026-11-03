@@ -23,7 +23,7 @@ def banner() -> None:
         print(c((DATA_DIR / "banner.txt").read_text().rstrip("\n"), "cyan"))
     except OSError:
         pass
-    print(c("  WebGuard Pro 2 · recon · detection · hunting", "bold"))
+    print(c("  WebGuard Pro 3 · assess · recon · detection · hunting", "bold"))
     print(c("  Only test systems you own or are explicitly authorised to assess.\n", "yellow"))
 
 

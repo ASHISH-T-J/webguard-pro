@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "webguard-pro"
-version = "2.0.0"
+version = "3.0.0"
 description = "Async web recon, vulnerability detection (signature + differential + ML anomaly) and bug bounty / red-team workflows"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -19,7 +19,9 @@ dependencies = [
 ml = ["numpy>=1.26", "scikit-learn>=1.4"]
 dns = ["dnspython>=2.6"]
 socks = ["httpx[socks]>=0.27"]
-all = ["numpy>=1.26", "scikit-learn>=1.4", "dnspython>=2.6", "httpx[socks]>=0.27"]
+llm = ["anthropic>=2.4"]
+browser = ["playwright>=1.40"]
+all = ["numpy>=1.26", "scikit-learn>=1.4", "dnspython>=2.6", "httpx[socks]>=0.27", "anthropic>=2.4", "playwright>=1.40"]
 dev = ["pytest>=8", "ruff>=0.5"]
 
 [project.scripts]

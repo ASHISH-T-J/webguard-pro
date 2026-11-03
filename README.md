@@ -1,124 +1,346 @@
-# WebGuard Pro 2
+# WebGuard Pro 3
 
-Async web reconnaissance, vulnerability detection and hunting framework for **authorized**
+**An autonomous, methodology-driven web application security assessment framework** for authorised
 penetration tests, red-team engagements and bug bounty programs.
 
-> Only test systems you own or have explicit written permission to assess. WebGuard enforces a
-> scope on every request (including redirects), but staying inside your program's rules is your
-> responsibility.
+WebGuard works the way a professional tester does: it maps the application, forms hypotheses about
+each input ("this parameter looks like a file path → try traversal first"), tests the most likely
+weaknesses first, verifies every finding independently, chains related issues into attack paths and
+writes the report - logging the reasoning behind every step. The planning brain can be the built-in
+local reasoner, **Claude** (Anthropic API) or any **local LLM via Ollama**.
 
-## What it does
+> ⚠️ **Authorised use only.** Only test systems you own or have explicit written permission to assess.
+> WebGuard enforces scope on every request, redirect hop and headless-browser load, never fuzzes
+> destructive verbs and uses harmless proof markers - but staying within your rules of engagement is
+> your responsibility.
 
-| Area | Highlights |
-|---|---|
-| **Engine** | `asyncio` + `httpx` with connection pooling, global token-bucket rate limiting, retries/backoff, 429 handling, HTTP/SOCKS proxy (Burp, Tor), custom headers/cookies for authenticated scans |
-| **Scope** | Hosts, `.domain` (apex+subs), `*.wildcards`, CIDRs, regex, URL prefixes, excludes, path deny-list (logout/delete never requested). Redirects are followed manually and every hop is scope-checked |
-| **Crawler** | Scope-aware BFS, forms (method/action/hidden values), robots.txt + sitemap seeding, JS endpoint mining, URL-pattern de-duplication |
-| **Signature detection** | JSON signature DB: 120 DBMS error patterns, 65 technologies, 25 WAFs, 40 secret types (entropy-filtered), 56 sensitive files/endpoints, 28 takeover services, 17 disclosure patterns. Add your own directories with `--signatures` or `WEBGUARD_SIGNATURES` |
-| **Differential / timing detection** | Multi-sample baselines that strip dynamic tokens; boolean SQLi confirmed with 2 random TRUE/FALSE pairs + junk-input control; time-based SQLi/CMDi confirmed slow → fast → slow |
-| **Proof-based checks** | SQLi, context-aware XSS (confirmed by parsing the DOM, not string matching), SSTI (random arithmetic + engine fingerprint), LFI, OS command injection, SSRF (in-band + OOB tokens), open redirect, CRLF, CORS, security headers/CSP/cookies, exposures with soft-404 detection |
-| **ML** | IsolationForest + robust z-score anomaly fuzzing (surfaces unknown bug classes as hunting leads); logistic-regression **triage model trained on your tp/fp labels** to score every finding |
-| **Database** | SQLite inventory of scans, assets (subdomains, hosts, endpoints, params, JS, ports) and findings with first/last-seen → *new attack surface* and *new/fixed findings* between runs |
-| **Recon** | crt.sh, AlienVault OTX, Wayback CDX, DNS, HTTP probing, tech + WAF fingerprinting, subdomain takeover, interesting-URL triage |
-| **Integrations** | subfinder, assetfinder, amass, gau, waybackurls, katana, nuclei (results imported as findings), nmap (XML parsed), ffuf; sqlmap/dalfox hand-off commands in reports |
-| **Reports** | JSON, self-contained HTML (escaped, filterable, dark mode), SARIF 2.1.0 (GitHub code scanning / CI), Markdown bug-bounty submissions with curl reproduction, impact and remediation |
+---
 
-## Install
+## Contents
+
+- [Quick start](#quick-start)
+- [How an assessment runs](#how-an-assessment-runs)
+- [What it detects](#what-it-detects)
+- [AI / LLM reasoning engines](#ai--llm-reasoning-engines)
+- [NLP and machine learning](#nlp-and-machine-learning)
+- [Grep, analysis and natural-language queries](#grep-analysis-and-natural-language-queries)
+- [Bug bounty and red-team workflows](#bug-bounty-and-red-team-workflows)
+- [Reports](#reports)
+- [Benchmarks](#benchmarks)
+- [Command reference](#command-reference)
+- [Architecture](#architecture)
+- [Development](#development)
+
+---
+
+## Quick start
 
 ```bash
-pip install -e ".[all]"        # httpx, bs4, pyyaml + scikit-learn, dnspython, SOCKS support
-webguard tools                 # shows which optional tools/components are available
+pip install -e ".[all]"            # core + ML, DNS, SOCKS, Claude SDK, Playwright
+webguard tools                     # which optional tools/components are available
+
+# Autonomous assessment with the built-in reasoner, showing the reasoning trace
+webguard assess https://app.example.com --scope scope.yml --show-trace
+
+# Same, with Claude planning the tests (credentials from ANTHROPIC_API_KEY / `ant auth login`)
+webguard assess https://app.example.com --llm claude
+
+# Fully offline with a local model
+ollama pull qwen2.5:7b && webguard assess https://app.example.com --llm ollama:qwen2.5:7b
+
+# Time-boxed engagement: stop active testing after 3000 requests or 20 minutes
+webguard assess https://app.example.com --budget-requests 3000 --budget-minutes 20
+
+# Authenticated testing through Burp
+webguard assess https://app.example.com -H "Authorization: Bearer …" --cookie session=… \
+    --proxy http://127.0.0.1:8080 --rate 5
 ```
 
-Core dependencies are only `httpx`, `beautifulsoup4` and `pyyaml`; everything else degrades
-gracefully (e.g. without scikit-learn the anomaly detector uses robust z-scores only).
-Docker: `docker build -t webguard . && docker run --rm -v "$PWD:/reports" webguard scan https://target`.
+Core dependencies are only `httpx`, `beautifulsoup4` and `pyyaml`. Everything else is optional and
+degrades gracefully: no scikit-learn → robust z-score anomaly model; no Playwright → no DOM-XSS
+browser verification; no LLM → local reasoner. Docker: `docker build -t webguard . && docker run --rm
+-v "$PWD:/reports" webguard assess https://target`.
 
-## Usage
+---
+
+## How an assessment runs
+
+`webguard assess` follows the OWASP Web Security Testing Guide (WSTG) in phases. Each phase the
+agent builds a list of *candidate tests* from what it knows, the reasoner ranks them (likelihood ×
+impact ÷ cost), the agent runs them, observes the results and adapts.
+
+| Phase | What happens | WSTG |
+|---|---|---|
+| **0. Rules of engagement** | Scope rules, rate limit, non-destructive policy printed and enforced | - |
+| **1. Recon & mapping** | Fingerprint tech + WAF · crawl (forms, robots, sitemap) · JS bundle mining with a real JS tokenizer (template literals, `http.post(...)` calls, SPA routes) · OpenAPI/Swagger import · NLP classification of every page and parameter · grep packs for DOM sinks, internal hosts, debug flags | INFO-02/03/06/07/08/10 |
+| **2. Configuration** | Security headers/CSP/methods · 56 sensitive-file signatures · soft-404-calibrated content discovery · CORS · 401/403 bypass · GraphQL | CONF-04/05/06/07/12, CLNT-07, ATHZ-02, APIT-01 |
+| **3. Identity & session** | Cookie flags · JWT analysis + offline weak-secret cracking · CSRF · serialized objects · password hashes/PII in APIs · **login auth-bypass (SQL/NoSQL)** | ATHN-04, SESS-02/05/10 |
+| **4. Input validation** | Per parameter, hypothesis-ordered: SQLi, NoSQLi, XSS, SSTI, LFI, command injection, SSRF, open redirect, CRLF, ML anomaly fuzzing · XXE · host-header/cache poisoning | INPV-01/05/07/12/15/17/18/19, ATHZ-01, CLNT-04 |
+| **5. Authz & client-side** | IDOR heuristics · **DOM XSS verified in headless Chromium** | ATHZ-04, CLNT-01 |
+| **6. Verification** | Every active finding is re-tested in a fresh context; unreproducible results are downgraded, never silently kept | - |
+| **7. Analysis & report** | Root-cause clustering · attack chains · CVSS + risk scoring · ML triage · narrative · WSTG coverage matrix | - |
+
+**Adaptive behaviour** (like a human tester): on HTTP 429 the agent halves its rate; on repeated WAF
+blocks it slows down and enables payload tampering; endpoints that answer 401/403 are not fuzzed
+blindly but listed as a coverage gap ("re-run with credentials"); with a budget, each phase gets a
+share and the highest-value tests run first.
+
+Example reasoning-trace step (verbatim from `benchmarks/results/juice-shop_local_2000.json`):
+
+```
+▸ step [input] (local)
+  thought:  Input validation: 62 candidate test(s). Prioritising by expected value per request (budgeted).
+            [xxe .../rest/continue-code-findIt/apply/] endpoint accepts a request body - check whether it
+            parses XML with external entities. [host_header .../walletNFTVerify] page builds absolute URLs
+            from the request host - test password-reset/cache poisoning via X-Forwarded-Host. ...
+  observed: 25 test(s), 933 requests; 3 new finding(s): LOW Anomalous input handling (server errors)
+            @ /api/Challenges/ [key]; HIGH SQL injection (error-based, SQLite) @ /rest/products/search [q]; ...
+```
+
+`webguard scan` runs the same engine exhaustively (every applicable test, no budget, local reasoner).
+
+---
+
+## What it detects
+
+Every active check needs **proof the server acted on the input**, not mere reflection:
+
+| Class | Technique |
+|---|---|
+| SQL injection | Error-based (130+ DBMS signatures), boolean differential with two random TRUE/FALSE pairs + junk-input control, time-based slow→fast→slow |
+| Authentication bypass | SQL/NoSQL payloads on login endpoints (forms, JSON APIs found in JS/OpenAPI); success = status flip + session/token issued |
+| NoSQL injection | `$ne`/`$eq`/`$regex` operator differential + MongoDB error signatures |
+| XSS | Canary → reflection-context analysis → context-specific break-out confirmed by **parsing the DOM** |
+| DOM XSS | Payload sets a random global in **headless Chromium**; reported only if it executed (SPA routes ranked by name) |
+| SSTI | Random-number arithmetic in 10 template syntaxes + engine fingerprint (Jinja2 vs Twig) |
+| Command injection | Shell arithmetic echo (`$((a*b))`) + timing |
+| LFI / XXE | File contents (`root:x:0:0:`, `win.ini`, PHP filter base64), XML external entities |
+| SSRF | Server fetches `example.com` content in-band; OOB tokens for interactsh/Collaborator |
+| Open redirect | Location/meta/JS redirects to a random host, incl. **allow-list bypasses** (`evil/?trusted`, `trusted.evil`) |
+| CRLF | Injected response header appears |
+| Host header / cache poisoning | `X-Forwarded-Host` & co. reflected in links/Location (always with a cache buster); cacheable → poisoning |
+| Access control | 401/403 bypass via path normalisation and `X-Original-URL`/IP headers (soft-404 aware); IDOR heuristic on sequential ids with PII |
+| JWT | `alg=none`, **offline HMAC secret cracking**, sensitive claims, missing `exp`, `jku/x5u/kid` |
+| Data exposure | Password hashes (MD5/SHA-1/bcrypt typed), secrets and bulk PII in JSON APIs; 40 secret/key patterns with entropy filtering |
+| Configuration | Headers, CSP weaknesses, cookie flags, CORS (reflection, `null`, prefix/suffix bypass, `*`), TRACE, exposures, directory listing, GraphQL introspection & batching, SRI, CSRF, serialized objects, secrets in URLs, verbose errors |
+| Unknowns | ML anomaly fuzzing (IsolationForest + robust z-scores) flags inputs whose handling deviates from benign behaviour |
+| Infrastructure | Subdomain takeover (28 services), exposed risky ports/services, nuclei templates (imported as findings) |
+
+---
+
+## AI / LLM reasoning engines
+
+| Engine | Use | How |
+|---|---|---|
+| `local` (default) | Deterministic, offline | Expected-value ranking from NLP parameter/page priors, technology priors (PHP→LFI, Express→NoSQLi, Flask→SSTI, Java→XXE…), knowledge-base facts and cost |
+| `claude` | Strongest planning and report writing | Official `anthropic` SDK, default model `claude-opus-5-5`, JSON-schema structured output, server-side refusal fallback (`fallbacks="default"`), `--llm-effort` |
+| `ollama[:model]` | Air-gapped engagements | Any local model via Ollama `/api/chat` with JSON-schema output |
+
+Guardrails: the LLM only **chooses and orders** pre-built, non-destructive tests from the candidate
+list - ids it invents are discarded - and all traffic still passes the scope guard. Any error,
+timeout, refusal or invalid output falls back to the local reasoner for that step (recorded in the
+trace). LLMs also write the executive summary, key risks and next steps (grounded in the findings;
+the local NLP narrative is used otherwise), and `webguard ask --llm claude "..."` answers free-form
+questions about results.
+
+---
+
+## NLP and machine learning
+
+- **Parameter semantics classifier** (naive Bayes over char n-grams + identifier tokens): `returnUrl` →
+  redirect, `imgPath` → file, `cmd`/`host` → command, `q` → search, … mapped to the bug classes a tester
+  would try first. Value shape refines it (URL-looking → SSRF/redirect, numeric → SQLi/IDOR).
+- **Page classifier**: login, registration, password reset, admin, error, stack trace, WAF block,
+  not-found, API JSON, docs, upload, search, directory listing, default page, content.
+- **Natural-language queries**: `"high sql injection on api"`, `"everything high except xss"`,
+  `"critical or high cross-site scripting with certain confidence"`.
+- **Narrative generation**: executive and technical summaries from findings and chains.
+- **Anomaly detection**: IsolationForest (scikit-learn) + robust z-scores over 14 response features.
+- **Triage model**: logistic regression trained on *your* tp/fp labels (`webguard db label`, `webguard ml train`).
+
+---
+
+## Grep, analysis and natural-language queries
+
+Every response a scan sees is stored (compressed) in the SQLite database, so you can keep hunting
+after the scan:
 
 ```bash
-# Scan one application (crawl + all checks), reports in ./reports
-webguard scan https://app.example.com
+webguard grep 12 --pack dom-sinks                    # innerHTML, bypassSecurityTrust*, eval(location...)
+webguard grep 12 --pack infrastructure --pack debug  # internal hosts, buckets, debug flags, TODOs
+webguard grep 12 --regex 'api/v[0-9]+/admin' --in js
+webguard ask "critical sql injection or authentication bypass"
+webguard analyze 12                                  # root-cause issues, attack chains, reasoning trace
+```
 
-# Authenticated, through Burp, slower and without time-based payloads
-webguard scan https://app.example.com -H "Authorization: Bearer …" --cookie session=… \
-    --proxy http://127.0.0.1:8080 --rate 5 --no-timing
+Packs: `dom-sinks`, `dom-sources`, `endpoints`, `infrastructure`, `debug`, `identity`, `versions`,
+`secrets`. Hits are de-duplicated across responses and ranked (sensitive + rare first).
 
-# Hunting extras: hidden-parameter discovery, OOB SSRF tokens, WAF-aware payload tampering
-webguard scan https://app.example.com --param-discovery --oob abc123.oast.fun --tamper space2comment
+Analysis groups findings by **root cause** (ten XSS hits from one template = one issue), scores risk
+(severity × confidence × ML true-positive probability × breadth, plus a CVSS 3.1 base vector per
+class) and detects **attack chains**, e.g. *XSS + session cookie without HttpOnly → account
+takeover*, *cracked JWT secret → privilege escalation*, *exposed MD5 hashes → credential compromise*,
+*open redirect + OAuth → token theft*, *host header injection on reset page → password reset poisoning*.
+
+---
+
+## Bug bounty and red-team workflows
+
+```bash
+# Bug bounty: recon → rank assets → assess top hosts → nuclei → ML triage → submission drafts
+webguard hunt example.com --scope program.yml -H "X-Bug-Bounty: yourhandle" --content-discovery
+
+# Continuous monitoring: run on a schedule, look only at what's new
+webguard db new example.com
+
+# Red team: subdomains, ports/services, takeover, ranked attack surface, MITRE ATT&CK mapping
+webguard surface example.com --scope engagement.yml
 
 # Recon only (no traffic to the target with --passive)
 webguard recon example.com --passive
-
-# Bug bounty pipeline: recon → rank assets → scan top hosts → nuclei → ML triage → reports
-webguard hunt example.com --scope examples/scope.yml -H "X-Bug-Bounty: yourhandle" --content-discovery
-
-# Red-team external attack surface: subdomains, ports/services, takeover, ATT&CK mapping
-webguard surface example.com --scope examples/scope.yml
 ```
 
-### Continuous hunting & ML triage
+Integrations (used when installed): subfinder, assetfinder, amass, gau, waybackurls, katana, nuclei,
+nmap, ffuf; sqlmap/dalfox hand-off commands are generated in reports. Recon sources: crt.sh,
+AlienVault OTX, Wayback CDX.
 
-```bash
-webguard db scans                       # history
-webguard db new example.com             # assets first seen in the latest run + fixed findings
-webguard db findings --target example.com
-webguard db label 42 fp                 # teach the triage model
-webguard db label 43 tp
-webguard ml train                       # logistic regression on your labels (k-fold CV reported)
-webguard report 7 -f html,md,sarif      # regenerate reports from the DB
+Scope files (`examples/scope.yml`): hosts, `.domain` (apex+subs), `*.wildcards`, CIDRs, regex, URL
+prefixes, excludes and a path deny-list (`/logout`, `/delete`, …).
+
+---
+
+## Reports
+
+`-f json,html,sarif,md` (default `json,html,md`):
+
+- **HTML** - executive summary, key risks, next steps, attack chains, root-cause issues with CVSS,
+  WSTG coverage matrix, full reasoning trace, filterable findings with reproduction commands. Every
+  value is escaped (payloads are attacker strings).
+- **Markdown** - bug-bounty-ready submissions: summary, steps to reproduce (curl / browser link),
+  impact, remediation, references, sqlmap/dalfox follow-ups.
+- **SARIF 2.1.0** - GitHub code scanning / CI. `scan`, `assess` and `hunt` exit with `2` when a
+  HIGH/CRITICAL finding exists, so they can gate pipelines.
+- **JSON** - everything, including trace, facts, coverage and OOB tokens.
+
+---
+
+## Benchmarks
+
+Measured in this repository's CI-equivalent environment (Python 3.13, local Docker), using the
+local reasoner. Reproduce with `python benchmarks/juice_shop.py` and `pytest`.
+
+**OWASP Juice Shop** (third-party, `bkimminich/juice-shop:latest`) - ground truth = 16 documented
+vulnerabilities reachable without an account in classes WebGuard tests (see
+`benchmarks/juice_shop.py`):
+
+| Run | Ground truth found | Requests | Time | MEDIUM+ findings outside ground truth |
+|---|---|---|---|---|
+| `assess`, no budget | **15 / 15** | 3,715 | 188 s | 0 |
+| `assess --budget-requests 2000` | **15 / 15** | 1,855 | 159 s | 0 |
+| `assess --budget-requests 1000` | 12 / 15 (all critical/high found) | 1,120 | 146 s | 0 |
+| v2 scanner (before this release) | 3 / 15 (metrics, headers, the leaked hashes - reported as 5 separate "generic password" secrets); only 3 injectable inputs mapped | 440 | 11 s | 0 |
+
+Found: login SQLi auth bypass, product-search SQLi, DOM XSS (`#/search?q`, verified in Chromium),
+open-redirect allow-list bypass, `/ftp` listing, `/metrics`, password hashes in `/rest/memories`, Swagger
+docs, CORS `*`, verbose errors, password hash inside the issued JWT, unlinked `/encryptionkeys` and
+`/support/logs` (content discovery), anonymous admin configuration API, missing hardening headers.
+The agent also detected Juice Shop's rate limiting and halved its request rate automatically.
+
+Caveats, stated plainly: the ground-truth list was written by us and several detection fixes were made
+while studying this same target (see the git history), so this is a development benchmark, not a blind
+evaluation. Authenticated-only Juice Shop vulnerabilities are out of scope for an anonymous run (the
+agent lists those endpoints as a coverage gap). The order-tracking XSS is excluded because the container
+build strips `<`/`>` from that input (verified manually). Run your own targets before trusting numbers.
+The Claude/Ollama engines were exercised against a mocked SDK / unreachable server in tests only (no API
+key in the build environment); the numbers above use the local reasoner.
+
+**Built-in vulnerable app** (`tests/vulnapp.py`) - 29 vulnerable endpoints across 24 classes, each
+with a *safe twin* that must not be reported. Full assessment: all detected, 0 false positives on the 14
+safe twins, every injection finding independently re-verified, ~33 s / ~3.1k requests.
+
+Budget-aware planning on the same app (high/critical bug classes found, out of 15):
+
+| Request budget | Requests used | High/critical classes found |
+|---|---|---|
+| 400 | 441 | 9 / 15 |
+| 1,000 | 917 | 12 / 15 |
+| unlimited | 3,147 | 15 / 15 |
+
+Planning matters: on Juice Shop with a 1,000-request budget, recall went from 7/15 to 12/15 by fixing
+budget allocation (shares apply after mapping), ranking by expected value per request, discounting
+guessed API bodies vs. inputs observed to respond, treating 401 vs 403 differently and adding
+diminishing returns for repeated test types - all visible in the reasoning trace.
+
+---
+
+## Command reference
+
+| Command | Purpose |
+|---|---|
+| `webguard assess <url>` | Autonomous methodology-driven assessment (`--llm`, `--budget-*`, `--show-trace`, `--no-browser`) |
+| `webguard scan <url>...` | Exhaustive scan with the same engine (`-l targets.txt`) |
+| `webguard recon <domain>` | Subdomains, DNS, live hosts, takeover, historical URLs (`--passive`) |
+| `webguard hunt <domain>` | Bug bounty pipeline (`--max-hosts`, `--content-discovery`, `--no-nuclei`) |
+| `webguard surface <domain>` | Red-team external attack surface + ATT&CK mapping |
+| `webguard grep <scan-id>` | Pattern packs / regex over stored responses |
+| `webguard ask "<question>"` | Natural-language query over findings (`--llm claude` for free-form answers) |
+| `webguard analyze <scan-id>` | Root-cause issues, attack chains, reasoning trace |
+| `webguard report <scan-id>` | Re-generate reports from the database |
+| `webguard db scans\|findings\|assets\|new\|label` | Query history, label tp/fp |
+| `webguard ml train\|status` | Train / inspect the triage model |
+| `webguard tools` | External tools and signature database status |
+| `webguard wizard` | Interactive guided mode |
+
+Common options: `--scope`, `--subdomains`, `-H`, `--cookie`, `--proxy`, `--rate`, `-c`, `--timeout`,
+`--depth`, `--max-urls`, `--checks`/`--skip`, `--no-timing`, `--time-delay`, `--param-discovery`,
+`--oob`, `--tamper`, `--signatures`, `--wordlist`, `--no-discovery`, `-o`, `-f`, `--db`, `--model`, `-v`.
+
+Legacy entry points `python3 webguard.py -d example.com -m passive|active|vulnerability` and
+`python3 scanner.py -d …` still work (translated to the commands above).
+
+---
+
+## Architecture
+
+```
+webguard/
+  cli.py                 command line
+  engine.py              `scan` = agent in exhaustive mode
+  assessment/            agent.py (plan→act→observe→verify loop, knowledge base, budget, adaptation)
+                         methodology.py (phases, WSTG mapping, rules of engagement)
+  ai/reasoner.py         Local / Claude / Ollama reasoning engines with guardrails + fallback
+  nlp/                   tokenizer, naive Bayes, page & parameter classifiers, NL query, narratives
+  analysis/              grep packs, root-cause clustering, attack chains, CVSS/risk
+  detection/             baseline & similarity, anomaly ML, request context, tamper
+    checks/              sqli, xss, server_side (ssti/lfi/cmdi/ssrf), client_side (redirect/crlf),
+                         advanced (xxe/nosqli/auth/host-header/403/idor/graphql), analyzers (jwt/csrf/
+                         data exposure/deserialization/sri), dom (headless Chromium), host, passive, hunting
+  crawler.py             async scope-aware crawler + JS tokenizer/endpoint miner
+  http.py                httpx engine: scope guard, token-bucket rate limit, retries, stats, safe redirects
+  recon/                 passive sources, probing/fingerprinting/takeover/ports, OpenAPI import, tool integrations
+  workflows/             recon, hunt (bug bounty), redteam (attack surface + ATT&CK)
+  db.py                  SQLite: scans, assets (first/last seen), findings, labels, responses, trace
+  ml/triage.py           logistic-regression triage model
+  reporting/             JSON, HTML, SARIF, Markdown
+  data/                  signatures/*.json (SQL errors, tech, WAF, secrets, exposures, takeover,
+                         disclosure) · wordlists (quick, common, params)
 ```
 
-Schedule `webguard hunt` (cron / CI) and focus on what `webguard db new` reports — new
-subdomains, endpoints and parameters are where fresh bugs usually are.
+Extend detection without code: drop JSON files into a directory and pass `--signatures DIR` (or set
+`WEBGUARD_SIGNATURES`); same-named entries override the built-ins.
 
-### Exit codes
-
-`scan` and `hunt` exit with `2` when a HIGH/CRITICAL finding exists, so they can gate CI
-pipelines (upload the `.sarif` file to GitHub code scanning).
-
-### Legacy entry points
-
-`python3 webguard.py -d example.com -m passive|active|vulnerability` and `python3 scanner.py -d …`
-still work and are translated to the new commands. `--tor` now maps to a real SOCKS proxy
-(`socks5://127.0.0.1:9050`) — the old "simulated Tor" mode, which silently sent traffic
-without anonymisation, was removed.
-
-## How detection avoids false positives
-
-* Every active check compares against a **baseline** of several benign requests and ignores
-  dynamic content (timestamps, CSRF tokens, hashes) and reflected input (raw, HTML-escaped and
-  URL-encoded forms).
-* Confirmation relies on values the server must **compute or fetch** — products of random
-  numbers (SSTI, command injection), file contents (LFI), remote page content (SSRF), new DOM
-  nodes/attributes with random names (XSS), injected headers (CRLF).
-* Patterns already present in the baseline (e.g. an SQL error on every page) are not reported.
-* Exposure checks compare against a soft-404 fingerprint of the site.
-* The test suite runs every check against a deliberately vulnerable app **and** a safe twin of
-  each endpoint, asserting detection and zero false positives.
+---
 
 ## Development
 
 ```bash
 pip install -e ".[all,dev]"
-pytest -q                 # 38 tests: e2e detection, false-positive twins, workflows, DB, ML, reports, CLI
+pytest -q                       # e2e detection + safe twins, agent, budget, NLP, reasoners (mocked SDK), CLI
 ruff check webguard tests
-python tests/vulnapp.py   # run the vulnerable test app to experiment locally
-```
-
-Project layout:
-
-```
-webguard/
-  cli.py  engine.py  crawler.py  http.py  scope.py  db.py  models.py  signatures.py
-  detection/  baseline.py anomaly.py context.py tamper.py checks/{sqli,xss,server_side,client_side,host,passive,hunting}.py
-  recon/      passive.py active.py tools.py
-  workflows/  recon.py hunt.py redteam.py
-  ml/         triage.py
-  reporting/  JSON / HTML / SARIF / Markdown writers
-  data/       signatures/*.json  wordlists/{common,params}.txt
+python tests/vulnapp.py         # run the vulnerable test app locally
+python benchmarks/juice_shop.py # benchmark against a running Juice Shop
 ```
 
 ## License
 
-GPL-3.0 — see [LICENSE](LICENSE).
+GPL-3.0 - see [LICENSE](LICENSE).

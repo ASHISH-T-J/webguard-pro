@@ -24,6 +24,11 @@ async def open_redirect(ctx: Context, point: InjectionPoint) -> None:
     own = urlsplit(point.url).netloc
     payloads = [f"https://{evil}/", f"//{evil}/", f"/\\{evil}/", f"https:/\\{evil}", f"https://{own}@{evil}/",
                 f"https://{evil}%2f{own}/", f"\\/\\/{evil}/"]
+    if point.original.startswith(("http://", "https://")):
+        # allow-list bypasses: validators that use substring / prefix matching on the trusted URL
+        trusted = point.original
+        payloads = [f"https://{evil}/?wg={trusted}", f"https://{evil}/#{trusted}",
+                    f"{trusted.split('://')[0]}://{urlsplit(trusted).netloc}.{evil}/", *payloads]
     for payload in payloads:
         r = await ctx.send(point, payload)
         if r is None:

@@ -1,20 +1,98 @@
 {
   "_comment": "Passive information-disclosure signatures applied to every response body. Only reported when the pattern is absent from the site's normal baseline pages.",
-  "Python Traceback": {"regex": "Traceback \\(most recent call last\\):\\s+File \"", "severity": "LOW", "cwe": "CWE-209"},
-  "Java Stack Trace": {"regex": "(?:java|javax|org\\.springframework|org\\.apache)\\.[\\w.$]+(?:Exception|Error)[\\s\\S]{0,400}?\\n\\s+at [\\w.$]+\\(", "severity": "LOW", "cwe": "CWE-209"},
-  ".NET Stack Trace": {"regex": "(?:Server Error in '/' Application|System\\.\\w+Exception:[\\s\\S]{0,300}? at \\w)", "severity": "LOW", "cwe": "CWE-209"},
-  "PHP Error": {"regex": "<b>(?:Fatal error|Warning|Parse error|Notice|Deprecated)</b>:\\s.+? in <b>[^<]+</b> on line <b>\\d+</b>", "severity": "LOW", "cwe": "CWE-209"},
-  "Node.js Stack Trace": {"regex": "(?:TypeError|ReferenceError|SyntaxError|Error): [^\\n]+\\n\\s+at [^\\n]+\\((?:/|[A-Z]:\\\\)[^)]+\\.js:\\d+:\\d+\\)", "severity": "LOW", "cwe": "CWE-209"},
-  "Ruby Stack Trace": {"regex": "(?:\\.rb:\\d+:in `[^']+'|ActionController::RoutingError|ActiveRecord::RecordNotFound)", "severity": "LOW", "cwe": "CWE-209"},
-  "Go Panic": {"regex": "panic: [^\\n]+\\n\\ngoroutine \\d+ \\[running\\]", "severity": "LOW", "cwe": "CWE-209"},
-  "Django Debug Page": {"regex": "You're seeing this error because you have <code>DEBUG = True</code>", "severity": "MEDIUM", "cwe": "CWE-215"},
-  "Laravel Debug Page": {"regex": "(?:Whoops, looks like something went wrong|Illuminate\\\\[A-Za-z\\\\]+Exception)", "severity": "MEDIUM", "cwe": "CWE-215"},
-  "Symfony Debug Toolbar": {"regex": "sf-toolbar|Symfony Profiler", "severity": "MEDIUM", "cwe": "CWE-215"},
-  "Werkzeug Debugger": {"regex": "Werkzeug Debugger|The debugger caught an exception in your WSGI application", "severity": "HIGH", "cwe": "CWE-215"},
-  "Rails Debug Page": {"regex": "Action Controller: Exception caught", "severity": "MEDIUM", "cwe": "CWE-215"},
-  "Spring Whitelabel Error": {"regex": "Whitelabel Error Page", "severity": "INFO", "cwe": "CWE-209"},
-  "ASP.NET Detailed Error": {"regex": "<b>\\s*Stack Trace:\\s*</b>|Version Information:</b>&nbsp;Microsoft \\.NET Framework", "severity": "LOW", "cwe": "CWE-209"},
-  "Full Path Disclosure (Unix)": {"regex": "(?:in|at|file) (/(?:var|home|usr|srv|opt|app)/[\\w./-]+\\.(?:php|py|rb|js|java|go))", "severity": "INFO", "cwe": "CWE-209"},
-  "Full Path Disclosure (Windows)": {"regex": "[A-Z]:\\\\(?:inetpub|Users|Program Files|wwwroot)\\\\[\\w\\\\. -]+", "severity": "INFO", "cwe": "CWE-209"},
-  "Sensitive HTML Comment": {"regex": "<!--[^>]{0,200}?(?:password|passwd|secret|api[_-]?key|todo:? remove|fixme|admin)[^>]{0,200}?-->", "severity": "INFO", "cwe": "CWE-615"}
+  "Python Traceback": {
+    "regex": "Traceback \\(most recent call last\\):\\s+File \"",
+    "severity": "LOW",
+    "cwe": "CWE-209"
+  },
+  "Java Stack Trace": {
+    "regex": "(?:java|javax|org\\.springframework|org\\.apache)\\.[\\w.$]+(?:Exception|Error)[\\s\\S]{0,400}?\\n\\s+at [\\w.$]+\\(",
+    "severity": "LOW",
+    "cwe": "CWE-209"
+  },
+  ".NET Stack Trace": {
+    "regex": "(?:Server Error in '/' Application|System\\.\\w+Exception:[\\s\\S]{0,300}? at \\w)",
+    "severity": "LOW",
+    "cwe": "CWE-209"
+  },
+  "PHP Error": {
+    "regex": "<b>(?:Fatal error|Warning|Parse error|Notice|Deprecated)</b>:\\s.+? in <b>[^<]+</b> on line <b>\\d+</b>",
+    "severity": "LOW",
+    "cwe": "CWE-209"
+  },
+  "Node.js Stack Trace": {
+    "regex": "(?:TypeError|ReferenceError|SyntaxError|Error): [^\\n]+\\n\\s+at [^\\n]+\\((?:/|[A-Z]:\\\\)[^)]+\\.js:\\d+:\\d+\\)",
+    "severity": "LOW",
+    "cwe": "CWE-209"
+  },
+  "Ruby Stack Trace": {
+    "regex": "(?:\\.rb:\\d+:in `[^']+'|ActionController::RoutingError|ActiveRecord::RecordNotFound)",
+    "severity": "LOW",
+    "cwe": "CWE-209"
+  },
+  "Go Panic": {
+    "regex": "panic: [^\\n]+\\n\\ngoroutine \\d+ \\[running\\]",
+    "severity": "LOW",
+    "cwe": "CWE-209"
+  },
+  "Django Debug Page": {
+    "regex": "You're seeing this error because you have <code>DEBUG = True</code>",
+    "severity": "MEDIUM",
+    "cwe": "CWE-215"
+  },
+  "Laravel Debug Page": {
+    "regex": "(?:Whoops, looks like something went wrong|Illuminate\\\\[A-Za-z\\\\]+Exception)",
+    "severity": "MEDIUM",
+    "cwe": "CWE-215"
+  },
+  "Symfony Debug Toolbar": {
+    "regex": "sf-toolbar|Symfony Profiler",
+    "severity": "MEDIUM",
+    "cwe": "CWE-215"
+  },
+  "Werkzeug Debugger": {
+    "regex": "Werkzeug Debugger|The debugger caught an exception in your WSGI application",
+    "severity": "HIGH",
+    "cwe": "CWE-215"
+  },
+  "Rails Debug Page": {
+    "regex": "Action Controller: Exception caught",
+    "severity": "MEDIUM",
+    "cwe": "CWE-215"
+  },
+  "Spring Whitelabel Error": {
+    "regex": "Whitelabel Error Page",
+    "severity": "INFO",
+    "cwe": "CWE-209"
+  },
+  "ASP.NET Detailed Error": {
+    "regex": "<b>\\s*Stack Trace:\\s*</b>|Version Information:</b>&nbsp;Microsoft \\.NET Framework",
+    "severity": "LOW",
+    "cwe": "CWE-209"
+  },
+  "Full Path Disclosure (Unix)": {
+    "regex": "(?:in|at|file) (/(?:var|home|usr|srv|opt|app)/[\\w./-]+\\.(?:php|py|rb|js|java|go))",
+    "severity": "INFO",
+    "cwe": "CWE-209"
+  },
+  "Full Path Disclosure (Windows)": {
+    "regex": "[A-Z]:\\\\(?:inetpub|Users|Program Files|wwwroot)\\\\[\\w\\\\. -]+",
+    "severity": "INFO",
+    "cwe": "CWE-209"
+  },
+  "Sensitive HTML Comment": {
+    "regex": "<!--[^>]{0,200}?(?:password|passwd|secret|api[_-]?key|todo:? remove|fixme|admin)[^>]{0,200}?-->",
+    "severity": "INFO",
+    "cwe": "CWE-615"
+  },
+  "Express Error Page Stack Trace": {
+    "regex": "<ul id=\"stacktrace\">|<title>Error: [^<]{3,200}</title>[\\s\\S]{0,4000}?at [^<]{0,200}\\.js:\\d+:\\d+",
+    "severity": "LOW",
+    "cwe": "CWE-209"
+  },
+  "Generic JS Stack Frame": {
+    "regex": "\\bat (?:[\\w$.<>]+ \\()?(?:/[\\w.\\-]+)+\\.(?:js|ts|mjs):\\d+:\\d+\\)?",
+    "severity": "LOW",
+    "cwe": "CWE-209"
+  }
 }

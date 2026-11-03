@@ -6,3 +6,5 @@ numpy>=1.26
 scikit-learn>=1.4
 dnspython>=2.6
 httpx[socks]>=0.27
+anthropic>=2.4      # optional: Claude reasoning engine (webguard assess --llm claude)
+playwright>=1.40    # optional: headless DOM XSS verification

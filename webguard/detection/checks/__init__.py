@@ -1,9 +1,10 @@
 """Registry of active per-injection-point checks (name -> coroutine(ctx, point))."""
 
-from webguard.detection.checks import client_side, hunting, server_side, sqli, xss
+from webguard.detection.checks import advanced, client_side, hunting, server_side, sqli, xss
 
 POINT_CHECKS = {
     "sqli": sqli.run,
+    "nosqli": advanced.nosqli,
     "xss": xss.run,
     "ssti": server_side.ssti,
     "lfi": server_side.lfi,
