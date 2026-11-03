@@ -101,6 +101,7 @@ class Finding:
     request: str | None = None  # reproducible curl command
     features: dict[str, float] = field(default_factory=dict)  # numeric evidence for ML triage
     ml_score: float | None = None  # probability of true positive from triage model
+    context: dict[str, Any] = field(default_factory=dict)  # environment, page type, WAF, verification, HTTP evidence
     timestamp: str = field(default_factory=utcnow)
 
     @property

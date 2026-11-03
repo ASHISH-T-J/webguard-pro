@@ -43,6 +43,8 @@ def _common(p: argparse.ArgumentParser) -> None:
                    help="extra header on every request (e.g. bug bounty ID header, Authorization)")
     g.add_argument("--cookie", action="append", default=[], metavar="name=value", help="cookie for authenticated scans")
     g.add_argument("--proxy", help="HTTP/SOCKS proxy, e.g. http://127.0.0.1:8080 (Burp) or socks5://127.0.0.1:9050 (Tor)")
+    g.add_argument("--profile", default="standard", choices=["safe", "standard", "thorough"],
+                   help="safe = production-friendly (slow, no timing/fuzzing); thorough = lab/staging (more discovery)")
     g = p.add_argument_group("performance")
     g.add_argument("--rate", type=float, default=20.0, help="max requests/second (default 20)")
     g.add_argument("-c", "--concurrency", type=int, default=20, help="concurrent requests (default 20)")
@@ -190,14 +192,16 @@ def make_config(args: argparse.Namespace) -> ScanConfig:
 
     if set(tamper) - set(TAMPERS):
         raise SystemExit(f"unknown tamper: {set(tamper) - set(TAMPERS)}")
-    return ScanConfig(
+    from webguard.config import apply_profile
+
+    return apply_profile(ScanConfig(
         concurrency=args.concurrency, rate_limit=args.rate, timeout=args.timeout, max_depth=args.depth,
         max_urls=args.max_urls, proxy=args.proxy, headers=headers, cookies=cookies, checks=checks,
         time_delay=args.time_delay, timing_checks=not args.no_timing, param_discovery=args.param_discovery,
         oob_domain=args.oob, tamper=tamper, db_path=Path(args.db), model_path=Path(args.model), verbose=args.verbose,
         **({"discovery_wordlist": None} if args.no_discovery else
            {"discovery_wordlist": Path(args.wordlist), "wordlist": Path(args.wordlist)} if args.wordlist else {}),
-    )
+    ), args.profile, explicit_wordlist=bool(args.wordlist) or args.no_discovery)
 
 
 def make_scope(args: argparse.Namespace, target: str) -> Scope:

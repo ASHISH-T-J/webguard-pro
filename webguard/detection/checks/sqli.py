@@ -138,6 +138,9 @@ async def _boolean_test(ctx: Context, point: InjectionPoint, base, true_t: str, 
         rf = await ctx.send(point, f_payload)
         if rt is None or rf is None:
             return False, feats, payload
+        # a block page / challenge for the FALSE payload is a classic boolean-SQLi false positive
+        if not (ctx.app_answered(rt, point, "sqli") and ctx.app_answered(rf, point, "sqli")):
+            return False, feats, payload
         reflect = [t_payload, f_payload]
         sim_true = similarity(rt.text, base.primary.text, reflect)
         sim_false = similarity(rf.text, base.primary.text, reflect)

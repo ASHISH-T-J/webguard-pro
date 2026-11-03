@@ -37,6 +37,7 @@ WSTG = {
     "WSTG-CONF-07": "Test HTTP Strict Transport Security",
     "WSTG-CONF-12": "Test for Content Security Policy",
     "WSTG-ATHN-04": "Testing for bypassing authentication schema",
+    "WSTG-ATHN-06": "Testing for browser cache weaknesses (incl. web cache deception)",
     "WSTG-ATHZ-01": "Testing directory traversal / file include",
     "WSTG-ATHZ-02": "Testing for bypassing authorization schema",
     "WSTG-ATHZ-04": "Testing for insecure direct object references",
@@ -88,6 +89,11 @@ CHECK_WSTG = {
     "data_exposure": ["WSTG-INFO-05"],
     "disclosure": ["WSTG-ERRH-01"],
     "secrets": ["WSTG-INFO-05"],
+    "js_analysis": ["WSTG-CLNT-01", "WSTG-INFO-05"],
+    "vulnerable_component": ["WSTG-INFO-08"],
+    "dom_flow": ["WSTG-CLNT-01"],
+    "prototype_pollution": ["WSTG-CLNT-01"],
+    "cache_deception": ["WSTG-ATHN-06"],
 }
 
 RULES_OF_ENGAGEMENT = [

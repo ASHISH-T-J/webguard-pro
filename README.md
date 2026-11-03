@@ -126,6 +126,54 @@ Every active check needs **proof the server acted on the input**, not mere refle
 | Unknowns | ML anomaly fuzzing (IsolationForest + robust z-scores) flags inputs whose handling deviates from benign behaviour |
 | Infrastructure | Subdomain takeover (28 services), exposed risky ports/services, nuclei templates (imported as findings) |
 
+### Techniques from bug bounty and red-team research
+
+| Technique | Source / rationale | How WebGuard tests it |
+|---|---|---|
+| Web cache deception | PortSwigger "Gotta cache 'em all" (Black Hat USA 2024): delimiter & normalisation discrepancies | Appends `/x.css`, `;x.css`, `%23x.css`, `%3fx.css`, `.x.css`, `%00x.css` to dynamic pages; reported only if the origin serves the dynamic page **and** a cache stores it. Unique random file names, so only our own response is ever cached; HIGH with a session, LOW (re-test advice) without |
+| Exposed JavaScript source maps | Recurring high-payout writeups (keys and internal routes in original sources) | Finds `sourceMappingURL` / `*.js.map`, reports the exposure, mines original sources for endpoints and secrets |
+| Lazy-loaded chunks | Admin/feature-flagged code lives in chunks the UI never loads | Fetches chunk files referenced from bundles and analyses them |
+| Static DOM-XSS flows & `postMessage` | Classic client-side bug classes | Source→variable→sink taint-lite analysis; message listeners without `origin` checks; client-read URL params become browser tests |
+| Vulnerable JS libraries | retire.js-style component analysis | `js_libs.json`: jQuery, jQuery UI, AngularJS, lodash, underscore, Bootstrap, moment, Handlebars, DOMPurify, axios, Vue 2, Prototype |
+| Header & cookie injection | SQLi via logged `User-Agent`/`X-Forwarded-For`, XSS via rendered `Referer`/cookies | Header/cookie injection points on a focused sample (root, header-reflecting pages, cookie-setting pages, logging-style paths) |
+| OAuth `redirect_uri` validation | Token-theft writeups | Allow-list bypass payloads on `redirect_uri`; hits on authorize endpoints are HIGH ("OAuth redirect_uri validation bypass") |
+| Client-side prototype pollution | Gadget-chain writeups | `?__proto__[k]=v`, `#constructor[prototype][k]=v` … verified by reading `Object.prototype` in headless Chromium |
+
+### Context analysis & false-positive control
+
+Every response is classified before it is used as evidence: application answer, **WAF block page,
+CDN/bot challenge, rate limiter**, auth wall, login redirect, soft-404, maintenance, or a typed error
+(database, template, XML, LDAP, XPath, path, command, deserialization, framework).
+
+- Responses produced by a WAF, challenge or rate limiter are **never** evidence. The affected inputs are
+  listed in the report as **NOT TESTED**, so "nothing found" is never confused with "not vulnerable".
+- Time-based checks scale their delay with measured network jitter (noisy targets need a bigger, clearer signal).
+- Cache-deception, exposure and 403-bypass checks compare against the page's own variability and the site's
+  soft-404 / SPA fallback fingerprint.
+- The environment (production / staging / development) is detected and attached to every finding, with a
+  note when impact should be confirmed in production.
+
+**WAF policy:** WebGuard detects and fingerprints WAFs/CDNs, adapts its request rate, and reports which
+inputs could not be tested because a defence answered. It deliberately does **not** include WAF-evasion
+payload obfuscation, CDN challenge solving, fingerprint spoofing, IP rotation or rate-limit evasion. For
+assessments behind a WAF, ask the owner to allow-list your source IP or provide an origin/staging
+endpoint, which is the standard practice in authorised engagements and tests the application itself.
+
+### Resilience
+
+Per-host adaptive rate control (AIMD: halve on 429/503/timeouts, recover gradually), `Retry-After`
+(seconds or HTTP date) honoured, jittered exponential retries for transient failures only, latency-based
+adaptive timeouts, and a circuit breaker that pauses unhealthy hosts and fails fast on dead ones. Error
+kinds (DNS, TLS, refused, timeouts, resets, protocol) and every rate adjustment appear in the report.
+
+### Profiles
+
+| `--profile` | Use | Behaviour |
+|---|---|---|
+| `safe` | production | ≤ 5 req/s, 5 concurrent, no time-based payloads, no anomaly fuzzing |
+| `standard` (default) | most engagements | balanced |
+| `thorough` | lab / staging | hidden-parameter discovery, full 4.6k-path content discovery |
+
 ---
 
 ## AI / LLM reasoning engines
@@ -214,10 +262,14 @@ prefixes, excludes and a path deny-list (`/logout`, `/delete`, …).
 `-f json,html,sarif,md` (default `json,html,md`):
 
 - **HTML** - executive summary, key risks, next steps, attack chains, root-cause issues with CVSS,
-  WSTG coverage matrix, full reasoning trace, filterable findings with reproduction commands. Every
-  value is escaped (payloads are attacker strings).
+  **test conditions** (environment, defences detected, NOT-TESTED inputs, network errors, adaptive rate
+  changes, JS-analysis summary), WSTG coverage matrix, full reasoning trace, and findings filterable by
+  text, severity and "verified only". Each finding shows its **context** (environment, page type, WAF,
+  verification status, review notes) and, for re-verified findings, the **exact HTTP request/response**
+  (excerpt centred on the payload). Every value is escaped (payloads are attacker strings).
 - **Markdown** - bug-bounty-ready submissions: summary, steps to reproduce (curl / browser link),
-  impact, remediation, references, sqlmap/dalfox follow-ups.
+  HTTP request/response evidence, verification/environment notes, impact, remediation, references,
+  sqlmap/dalfox follow-ups.
 - **SARIF 2.1.0** - GitHub code scanning / CI. `scan`, `assess` and `hunt` exit with `2` when a
   HIGH/CRITICAL finding exists, so they can gate pipelines.
 - **JSON** - everything, including trace, facts, coverage and OOB tokens.
@@ -235,10 +287,16 @@ vulnerabilities reachable without an account in classes WebGuard tests (see
 
 | Run | Ground truth found | Requests | Time | MEDIUM+ findings outside ground truth |
 |---|---|---|---|---|
-| `assess`, no budget | **15 / 15** | 3,715 | 188 s | 0 |
-| `assess --budget-requests 2000` | **15 / 15** | 1,855 | 159 s | 0 |
-| `assess --budget-requests 1000` | 12 / 15 (all critical/high found) | 1,120 | 146 s | 0 |
-| v2 scanner (before this release) | 3 / 15 (metrics, headers, the leaked hashes - reported as 5 separate "generic password" secrets); only 3 injectable inputs mapped | 440 | 11 s | 0 |
+| `assess`, no budget | **15 / 15** | 5,197 | 224 s | 0 |
+| `assess --budget-requests 2000` | 13 / 15 | 2,029 | 181 s | 0 |
+| `assess --budget-requests 1000` | 12 / 15 (all critical/high found) | 1,141 | 161 s | 0 |
+| v2 scanner (before the agent) | 3 / 15 (metrics, headers, the leaked hashes - reported as 5 separate "generic password" secrets); only 3 injectable inputs mapped | 440 | 11 s | 0 |
+
+The full run is ~40% more requests than the previous release (3,715) because it now also tests header/cookie
+injection, JS source maps and chunks, cache deception and prototype pollution; with a 2,000-request budget
+those extra tests cost two ground-truth items (13/15 vs 15/15 before) - a deliberate breadth/budget trade-off.
+Beyond the list, the run also found password hashes in `/support/logs/audit.json` (reached via content
+discovery) and real directory listings under `/.well-known`.
 
 Found: login SQLi auth bypass, product-search SQLi, DOM XSS (`#/search?q`, verified in Chromium),
 open-redirect allow-list bypass, `/ftp` listing, `/metrics`, password hashes in `/rest/memories`, Swagger
@@ -254,17 +312,19 @@ build strips `<`/`>` from that input (verified manually). Run your own targets b
 The Claude/Ollama engines were exercised against a mocked SDK / unreachable server in tests only (no API
 key in the build environment); the numbers above use the local reasoner.
 
-**Built-in vulnerable app** (`tests/vulnapp.py`) - 29 vulnerable endpoints across 24 classes, each
-with a *safe twin* that must not be reported. Full assessment: all detected, 0 false positives on the 14
-safe twins, every injection finding independently re-verified, ~33 s / ~3.1k requests.
+**Built-in vulnerable app** (`tests/vulnapp.py`) - 34 vulnerable test cases across 24 finding classes
+(including header/cookie injection, source maps, cache deception, OAuth, prototype pollution and a
+simulated Cloudflare-style WAF), with 20 *safe twins* that must not be reported. Full assessment: all
+detected, 0 false positives on the safe twins, WAF-blocked inputs reported as NOT TESTED, every injection
+finding independently re-verified with HTTP evidence attached.
 
-Budget-aware planning on the same app (high/critical bug classes found, out of 15):
+Budget-aware planning on the same app (high/critical finding classes found, out of the 16 a full run finds):
 
 | Request budget | Requests used | High/critical classes found |
 |---|---|---|
-| 400 | 441 | 9 / 15 |
-| 1,000 | 917 | 12 / 15 |
-| unlimited | 3,147 | 15 / 15 |
+| 400 | 435 | 9 / 16 |
+| 1,000 | 968 | 12 / 16 |
+| unlimited | 6,723 | 16 / 16 |
 
 Planning matters: on Juice Shop with a 1,000-request budget, recall went from 7/15 to 12/15 by fixing
 budget allocation (shares apply after mapping), ranking by expected value per request, discounting
@@ -291,7 +351,7 @@ diminishing returns for repeated test types - all visible in the reasoning trace
 | `webguard tools` | External tools and signature database status |
 | `webguard wizard` | Interactive guided mode |
 
-Common options: `--scope`, `--subdomains`, `-H`, `--cookie`, `--proxy`, `--rate`, `-c`, `--timeout`,
+Common options: `--profile safe|standard|thorough`, `--scope`, `--subdomains`, `-H`, `--cookie`, `--proxy`, `--rate`, `-c`, `--timeout`,
 `--depth`, `--max-urls`, `--checks`/`--skip`, `--no-timing`, `--time-delay`, `--param-discovery`,
 `--oob`, `--tamper`, `--signatures`, `--wordlist`, `--no-discovery`, `-o`, `-f`, `--db`, `--model`, `-v`.
 
@@ -335,7 +395,7 @@ Extend detection without code: drop JSON files into a directory and pass `--sign
 
 ```bash
 pip install -e ".[all,dev]"
-pytest -q                       # e2e detection + safe twins, agent, budget, NLP, reasoners (mocked SDK), CLI
+pytest -q                       # 123 tests: e2e detection + safe twins, resilience, context, agent, budget, NLP, reasoners, CLI
 ruff check webguard tests
 python tests/vulnapp.py         # run the vulnerable test app locally
 python benchmarks/juice_shop.py # benchmark against a running Juice Shop

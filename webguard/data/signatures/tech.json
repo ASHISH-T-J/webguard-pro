@@ -1,68 +1,598 @@
 {
   "_comment": "Technology fingerprints. Matchers: headers{name: regex}, cookies[regex], html[regex], meta{name: regex}, scripts[regex on script src]. A named group 'version' extracts the version.",
-  "nginx": {"category": "web-server", "headers": {"server": "nginx(?:/(?P<version>[\\d.]+))?"}},
-  "Apache HTTP Server": {"category": "web-server", "headers": {"server": "Apache(?:/(?P<version>[\\d.]+))?"}},
-  "Microsoft IIS": {"category": "web-server", "headers": {"server": "Microsoft-IIS(?:/(?P<version>[\\d.]+))?"}},
-  "LiteSpeed": {"category": "web-server", "headers": {"server": "LiteSpeed"}},
-  "Caddy": {"category": "web-server", "headers": {"server": "Caddy"}},
-  "OpenResty": {"category": "web-server", "headers": {"server": "openresty(?:/(?P<version>[\\d.]+))?"}},
-  "Envoy": {"category": "proxy", "headers": {"server": "envoy", "x-envoy-upstream-service-time": "."}},
-  "Apache Tomcat": {"category": "app-server", "headers": {"server": "Apache-Coyote"}, "html": ["Apache Tomcat(?:/(?P<version>[\\d.]+))?"]},
-  "Jetty": {"category": "app-server", "headers": {"server": "Jetty(?:\\((?P<version>[\\d.v]+)\\))?"}},
-  "Gunicorn": {"category": "app-server", "headers": {"server": "gunicorn(?:/(?P<version>[\\d.]+))?"}},
-  "uvicorn": {"category": "app-server", "headers": {"server": "uvicorn"}},
-  "Werkzeug": {"category": "app-server", "headers": {"server": "Werkzeug(?:/(?P<version>[\\d.]+))?"}},
-  "Kestrel": {"category": "app-server", "headers": {"server": "Kestrel"}},
-  "PHP": {"category": "language", "headers": {"x-powered-by": "PHP(?:/(?P<version>[\\d.]+))?"}, "cookies": ["^PHPSESSID$"]},
-  "ASP.NET": {"category": "framework", "headers": {"x-powered-by": "ASP\\.NET", "x-aspnet-version": "(?P<version>.+)", "x-aspnetmvc-version": "."}, "cookies": ["^ASP\\.NET_SessionId$", "^\\.ASPXAUTH$"], "html": ["__VIEWSTATE"]},
-  "Java": {"category": "language", "cookies": ["^JSESSIONID$"]},
-  "Express": {"category": "framework", "headers": {"x-powered-by": "Express"}},
-  "Next.js": {"category": "framework", "headers": {"x-powered-by": "Next\\.js(?: (?P<version>[\\d.]+))?"}, "html": ["/_next/static/", "__NEXT_DATA__"]},
-  "Nuxt.js": {"category": "framework", "html": ["__NUXT__", "/_nuxt/"]},
-  "React": {"category": "js-framework", "html": ["data-reactroot", "react(?:\\.production)?\\.min\\.js"]},
-  "Vue.js": {"category": "js-framework", "html": ["data-v-[0-9a-f]{8}", "vue(?:\\.runtime)?(?:\\.global)?(?:\\.prod)?\\.(?:min\\.)?js"]},
-  "Angular": {"category": "js-framework", "html": ["ng-version=\"(?P<version>[\\d.]+)\"", "ng-app="]},
-  "AngularJS": {"category": "js-framework", "scripts": ["angular(?:js)?[./-](?P<version>1\\.[\\d.]+)?"]},
-  "jQuery": {"category": "js-library", "scripts": ["jquery[.-](?P<version>\\d+\\.\\d+(?:\\.\\d+)?)(?:\\.min)?\\.js", "jquery(?:\\.min)?\\.js"]},
-  "Bootstrap": {"category": "ui", "html": ["bootstrap(?:\\.min)?\\.(?:css|js)"]},
-  "Django": {"category": "framework", "cookies": ["^csrftoken$", "^django_language$"], "html": ["csrfmiddlewaretoken"]},
-  "Flask": {"category": "framework", "headers": {"server": "Werkzeug"}},
-  "Laravel": {"category": "framework", "cookies": ["^laravel_session$", "^XSRF-TOKEN$"]},
-  "Ruby on Rails": {"category": "framework", "headers": {"x-runtime": "^[\\d.]+$"}, "cookies": ["_session_id$"], "meta": {"csrf-param": "authenticity_token"}},
-  "Spring": {"category": "framework", "html": ["Whitelabel Error Page"], "headers": {"x-application-context": "."}},
-  "Spring Boot Actuator": {"category": "framework", "html": ["\"_links\":\\{\"self\":\\{\"href\":\"[^\"]*/actuator\""]},
-  "WordPress": {"category": "cms", "html": ["/wp-content/", "/wp-includes/"], "meta": {"generator": "WordPress ?(?P<version>[\\d.]+)?"}, "headers": {"link": "rel=\"https://api\\.w\\.org/\""}},
-  "Drupal": {"category": "cms", "headers": {"x-drupal-cache": ".", "x-generator": "Drupal ?(?P<version>\\d+)?"}, "meta": {"generator": "Drupal ?(?P<version>\\d+)?"}, "html": ["Drupal\\.settings", "/sites/default/files/"]},
-  "Joomla": {"category": "cms", "meta": {"generator": "Joomla!? ?(?P<version>[\\d.]+)?"}, "html": ["/media/jui/", "option=com_"]},
-  "Magento": {"category": "ecommerce", "cookies": ["^frontend$", "^mage-cache"], "html": ["Mage\\.Cookies", "/static/version\\d+/frontend/"]},
-  "Shopify": {"category": "ecommerce", "headers": {"x-shopid": ".", "x-shopify-stage": "."}, "html": ["cdn\\.shopify\\.com"]},
-  "Ghost": {"category": "cms", "meta": {"generator": "Ghost ?(?P<version>[\\d.]+)?"}},
-  "Wix": {"category": "cms", "headers": {"x-wix-request-id": "."}},
-  "Squarespace": {"category": "cms", "html": ["static\\.squarespace\\.com"]},
-  "Grafana": {"category": "monitoring", "html": ["grafana-app", "window\\.grafanaBootData"]},
-  "Kibana": {"category": "monitoring", "headers": {"kbn-name": ".", "kbn-version": "(?P<version>.+)"}},
-  "Jenkins": {"category": "ci", "headers": {"x-jenkins": "(?P<version>.+)", "x-hudson": "."}},
-  "GitLab": {"category": "devops", "html": ["gon\\.gitlab_url", "gitlab-logo"], "cookies": ["^_gitlab_session$"]},
-  "Jira": {"category": "devops", "headers": {"x-arequestid": "."}, "html": ["ajs-version-number\" content=\"(?P<version>[\\d.]+)"]},
-  "Confluence": {"category": "devops", "headers": {"x-confluence-request-time": "."}, "html": ["ajs-version-number"]},
-  "phpMyAdmin": {"category": "database-admin", "html": ["phpMyAdmin", "pma_navigation"]},
-  "Swagger UI": {"category": "api-docs", "html": ["swagger-ui(?:-bundle)?\\.js", "SwaggerUIBundle"]},
-  "GraphQL": {"category": "api", "html": ["graphiql", "GraphQL Playground"]},
-  "Cloudflare": {"category": "cdn", "headers": {"server": "cloudflare", "cf-ray": "."}, "cookies": ["^__cf_bm$", "^__cfduid$"]},
-  "Amazon CloudFront": {"category": "cdn", "headers": {"x-amz-cf-id": ".", "via": "CloudFront"}},
-  "Amazon S3": {"category": "storage", "headers": {"server": "AmazonS3", "x-amz-request-id": "."}},
-  "Akamai": {"category": "cdn", "headers": {"x-akamai-transformed": ".", "server": "AkamaiGHost"}},
-  "Fastly": {"category": "cdn", "headers": {"x-served-by": "cache-", "fastly-debug-digest": "."}},
-  "Varnish": {"category": "cache", "headers": {"via": "varnish", "x-varnish": "."}},
-  "Vercel": {"category": "paas", "headers": {"server": "Vercel", "x-vercel-id": "."}},
-  "Netlify": {"category": "paas", "headers": {"server": "Netlify", "x-nf-request-id": "."}},
-  "Heroku": {"category": "paas", "headers": {"via": "vegur"}},
-  "Google Cloud": {"category": "paas", "headers": {"server": "Google Frontend", "via": "1\\.1 google"}},
-  "Azure": {"category": "paas", "headers": {"x-ms-request-id": ".", "x-azure-ref": "."}},
-  "Google Analytics": {"category": "analytics", "html": ["google-analytics\\.com/(?:ga|analytics)\\.js", "googletagmanager\\.com/gtag/js"]},
-  "reCAPTCHA": {"category": "security", "html": ["google\\.com/recaptcha"]},
-  "Keycloak": {"category": "auth", "html": ["/auth/realms/", "kc-form-login"]},
-  "Okta": {"category": "auth", "html": ["okta-sign-in", "\\.okta\\.com"]},
-  "Elasticsearch": {"category": "database", "html": ["\"cluster_name\"\\s*:", "\"tagline\"\\s*:\\s*\"You Know, for Search\""]},
-  "Apache Solr": {"category": "search", "html": ["Solr Admin", "solr\\.css"]}
+  "nginx": {
+    "category": "web-server",
+    "headers": {
+      "server": "nginx(?:/(?P<version>[\\d.]+))?"
+    }
+  },
+  "Apache HTTP Server": {
+    "category": "web-server",
+    "headers": {
+      "server": "Apache(?:/(?P<version>[\\d.]+))?"
+    }
+  },
+  "Microsoft IIS": {
+    "category": "web-server",
+    "headers": {
+      "server": "Microsoft-IIS(?:/(?P<version>[\\d.]+))?"
+    }
+  },
+  "LiteSpeed": {
+    "category": "web-server",
+    "headers": {
+      "server": "LiteSpeed"
+    }
+  },
+  "Caddy": {
+    "category": "web-server",
+    "headers": {
+      "server": "Caddy"
+    }
+  },
+  "OpenResty": {
+    "category": "web-server",
+    "headers": {
+      "server": "openresty(?:/(?P<version>[\\d.]+))?"
+    }
+  },
+  "Envoy": {
+    "category": "proxy",
+    "headers": {
+      "server": "envoy",
+      "x-envoy-upstream-service-time": "."
+    }
+  },
+  "Apache Tomcat": {
+    "category": "app-server",
+    "headers": {
+      "server": "Apache-Coyote"
+    },
+    "html": [
+      "Apache Tomcat(?:/(?P<version>[\\d.]+))?"
+    ]
+  },
+  "Jetty": {
+    "category": "app-server",
+    "headers": {
+      "server": "Jetty(?:\\((?P<version>[\\d.v]+)\\))?"
+    }
+  },
+  "Gunicorn": {
+    "category": "app-server",
+    "headers": {
+      "server": "gunicorn(?:/(?P<version>[\\d.]+))?"
+    }
+  },
+  "uvicorn": {
+    "category": "app-server",
+    "headers": {
+      "server": "uvicorn"
+    }
+  },
+  "Werkzeug": {
+    "category": "app-server",
+    "headers": {
+      "server": "Werkzeug(?:/(?P<version>[\\d.]+))?"
+    }
+  },
+  "Kestrel": {
+    "category": "app-server",
+    "headers": {
+      "server": "Kestrel"
+    }
+  },
+  "PHP": {
+    "category": "language",
+    "headers": {
+      "x-powered-by": "PHP(?:/(?P<version>[\\d.]+))?"
+    },
+    "cookies": [
+      "^PHPSESSID$"
+    ]
+  },
+  "ASP.NET": {
+    "category": "framework",
+    "headers": {
+      "x-powered-by": "ASP\\.NET",
+      "x-aspnet-version": "(?P<version>.+)",
+      "x-aspnetmvc-version": "."
+    },
+    "cookies": [
+      "^ASP\\.NET_SessionId$",
+      "^\\.ASPXAUTH$"
+    ],
+    "html": [
+      "__VIEWSTATE"
+    ]
+  },
+  "Java": {
+    "category": "language",
+    "cookies": [
+      "^JSESSIONID$"
+    ]
+  },
+  "Express": {
+    "category": "framework",
+    "headers": {
+      "x-powered-by": "Express"
+    }
+  },
+  "Next.js": {
+    "category": "framework",
+    "headers": {
+      "x-powered-by": "Next\\.js(?: (?P<version>[\\d.]+))?"
+    },
+    "html": [
+      "/_next/static/",
+      "__NEXT_DATA__"
+    ]
+  },
+  "Nuxt.js": {
+    "category": "framework",
+    "html": [
+      "__NUXT__",
+      "/_nuxt/"
+    ]
+  },
+  "React": {
+    "category": "js-framework",
+    "html": [
+      "data-reactroot",
+      "react(?:\\.production)?\\.min\\.js"
+    ]
+  },
+  "Vue.js": {
+    "category": "js-framework",
+    "html": [
+      "data-v-[0-9a-f]{8}",
+      "vue(?:\\.runtime)?(?:\\.global)?(?:\\.prod)?\\.(?:min\\.)?js"
+    ]
+  },
+  "Angular": {
+    "category": "js-framework",
+    "html": [
+      "ng-version=\"(?P<version>[\\d.]+)\"",
+      "ng-app="
+    ]
+  },
+  "AngularJS": {
+    "category": "js-framework",
+    "scripts": [
+      "angular(?:js)?[./-](?P<version>1\\.[\\d.]+)?"
+    ]
+  },
+  "jQuery": {
+    "category": "js-library",
+    "scripts": [
+      "jquery[.-](?P<version>\\d+\\.\\d+(?:\\.\\d+)?)(?:\\.min)?\\.js",
+      "jquery(?:\\.min)?\\.js"
+    ]
+  },
+  "Bootstrap": {
+    "category": "ui",
+    "html": [
+      "bootstrap(?:\\.min)?\\.(?:css|js)"
+    ]
+  },
+  "Django": {
+    "category": "framework",
+    "cookies": [
+      "^csrftoken$",
+      "^django_language$"
+    ],
+    "html": [
+      "csrfmiddlewaretoken"
+    ]
+  },
+  "Flask": {
+    "category": "framework",
+    "headers": {
+      "server": "Werkzeug"
+    }
+  },
+  "Laravel": {
+    "category": "framework",
+    "cookies": [
+      "^laravel_session$",
+      "^XSRF-TOKEN$"
+    ]
+  },
+  "Ruby on Rails": {
+    "category": "framework",
+    "headers": {
+      "x-runtime": "^[\\d.]+$"
+    },
+    "cookies": [
+      "_session_id$"
+    ],
+    "meta": {
+      "csrf-param": "authenticity_token"
+    }
+  },
+  "Spring": {
+    "category": "framework",
+    "html": [
+      "Whitelabel Error Page"
+    ],
+    "headers": {
+      "x-application-context": "."
+    }
+  },
+  "Spring Boot Actuator": {
+    "category": "framework",
+    "html": [
+      "\"_links\":\\{\"self\":\\{\"href\":\"[^\"]*/actuator\""
+    ]
+  },
+  "WordPress": {
+    "category": "cms",
+    "html": [
+      "/wp-content/",
+      "/wp-includes/"
+    ],
+    "meta": {
+      "generator": "WordPress ?(?P<version>[\\d.]+)?"
+    },
+    "headers": {
+      "link": "rel=\"https://api\\.w\\.org/\""
+    }
+  },
+  "Drupal": {
+    "category": "cms",
+    "headers": {
+      "x-drupal-cache": ".",
+      "x-generator": "Drupal ?(?P<version>\\d+)?"
+    },
+    "meta": {
+      "generator": "Drupal ?(?P<version>\\d+)?"
+    },
+    "html": [
+      "Drupal\\.settings",
+      "/sites/default/files/"
+    ]
+  },
+  "Joomla": {
+    "category": "cms",
+    "meta": {
+      "generator": "Joomla!? ?(?P<version>[\\d.]+)?"
+    },
+    "html": [
+      "/media/jui/",
+      "option=com_"
+    ]
+  },
+  "Magento": {
+    "category": "ecommerce",
+    "cookies": [
+      "^frontend$",
+      "^mage-cache"
+    ],
+    "html": [
+      "Mage\\.Cookies",
+      "/static/version\\d+/frontend/"
+    ]
+  },
+  "Shopify": {
+    "category": "ecommerce",
+    "headers": {
+      "x-shopid": ".",
+      "x-shopify-stage": "."
+    },
+    "html": [
+      "cdn\\.shopify\\.com"
+    ]
+  },
+  "Ghost": {
+    "category": "cms",
+    "meta": {
+      "generator": "Ghost ?(?P<version>[\\d.]+)?"
+    }
+  },
+  "Wix": {
+    "category": "cms",
+    "headers": {
+      "x-wix-request-id": "."
+    }
+  },
+  "Squarespace": {
+    "category": "cms",
+    "html": [
+      "static\\.squarespace\\.com"
+    ]
+  },
+  "Grafana": {
+    "category": "monitoring",
+    "html": [
+      "grafana-app",
+      "window\\.grafanaBootData"
+    ]
+  },
+  "Kibana": {
+    "category": "monitoring",
+    "headers": {
+      "kbn-name": ".",
+      "kbn-version": "(?P<version>.+)"
+    }
+  },
+  "Jenkins": {
+    "category": "ci",
+    "headers": {
+      "x-jenkins": "(?P<version>.+)",
+      "x-hudson": "."
+    }
+  },
+  "GitLab": {
+    "category": "devops",
+    "html": [
+      "gon\\.gitlab_url",
+      "gitlab-logo"
+    ],
+    "cookies": [
+      "^_gitlab_session$"
+    ]
+  },
+  "Jira": {
+    "category": "devops",
+    "headers": {
+      "x-arequestid": "."
+    },
+    "html": [
+      "ajs-version-number\" content=\"(?P<version>[\\d.]+)"
+    ]
+  },
+  "Confluence": {
+    "category": "devops",
+    "headers": {
+      "x-confluence-request-time": "."
+    },
+    "html": [
+      "ajs-version-number"
+    ]
+  },
+  "phpMyAdmin": {
+    "category": "database-admin",
+    "html": [
+      "phpMyAdmin",
+      "pma_navigation"
+    ]
+  },
+  "Swagger UI": {
+    "category": "api-docs",
+    "html": [
+      "swagger-ui(?:-bundle)?\\.js",
+      "SwaggerUIBundle"
+    ]
+  },
+  "GraphQL": {
+    "category": "api",
+    "html": [
+      "graphiql",
+      "GraphQL Playground"
+    ]
+  },
+  "Cloudflare": {
+    "category": "cdn",
+    "headers": {
+      "server": "cloudflare",
+      "cf-ray": "."
+    },
+    "cookies": [
+      "^__cf_bm$",
+      "^__cfduid$"
+    ]
+  },
+  "Amazon CloudFront": {
+    "category": "cdn",
+    "headers": {
+      "x-amz-cf-id": ".",
+      "via": "CloudFront"
+    }
+  },
+  "Amazon S3": {
+    "category": "storage",
+    "headers": {
+      "server": "AmazonS3",
+      "x-amz-request-id": "."
+    }
+  },
+  "Akamai": {
+    "category": "cdn",
+    "headers": {
+      "x-akamai-transformed": ".",
+      "server": "AkamaiGHost"
+    }
+  },
+  "Fastly": {
+    "category": "cdn",
+    "headers": {
+      "x-served-by": "cache-",
+      "fastly-debug-digest": "."
+    }
+  },
+  "Varnish": {
+    "category": "cache",
+    "headers": {
+      "via": "varnish",
+      "x-varnish": "."
+    }
+  },
+  "Vercel": {
+    "category": "paas",
+    "headers": {
+      "server": "Vercel",
+      "x-vercel-id": "."
+    }
+  },
+  "Netlify": {
+    "category": "paas",
+    "headers": {
+      "server": "Netlify",
+      "x-nf-request-id": "."
+    }
+  },
+  "Heroku": {
+    "category": "paas",
+    "headers": {
+      "via": "vegur"
+    }
+  },
+  "Google Cloud": {
+    "category": "paas",
+    "headers": {
+      "server": "Google Frontend",
+      "via": "1\\.1 google"
+    }
+  },
+  "Azure": {
+    "category": "paas",
+    "headers": {
+      "x-ms-request-id": ".",
+      "x-azure-ref": "."
+    }
+  },
+  "Google Analytics": {
+    "category": "analytics",
+    "html": [
+      "google-analytics\\.com/(?:ga|analytics)\\.js",
+      "googletagmanager\\.com/gtag/js"
+    ]
+  },
+  "reCAPTCHA": {
+    "category": "security",
+    "html": [
+      "google\\.com/recaptcha"
+    ]
+  },
+  "Keycloak": {
+    "category": "auth",
+    "html": [
+      "/auth/realms/",
+      "kc-form-login"
+    ]
+  },
+  "Okta": {
+    "category": "auth",
+    "html": [
+      "okta-sign-in",
+      "\\.okta\\.com"
+    ]
+  },
+  "Elasticsearch": {
+    "category": "database",
+    "html": [
+      "\"cluster_name\"\\s*:",
+      "\"tagline\"\\s*:\\s*\"You Know, for Search\""
+    ]
+  },
+  "Apache Solr": {
+    "category": "search",
+    "html": [
+      "Solr Admin",
+      "solr\\.css"
+    ]
+  },
+  "Strapi": {
+    "category": "cms",
+    "headers": {
+      "x-powered-by": "Strapi"
+    }
+  },
+  "Directus": {
+    "category": "cms",
+    "headers": {
+      "x-powered-by": "Directus"
+    }
+  },
+  "Remix": {
+    "category": "framework",
+    "html": [
+      "__remixContext"
+    ]
+  },
+  "SvelteKit": {
+    "category": "framework",
+    "html": [
+      "__sveltekit_",
+      "data-sveltekit"
+    ]
+  },
+  "Astro": {
+    "category": "framework",
+    "html": [
+      "astro-island"
+    ],
+    "meta": {
+      "generator": "Astro v?(?P<version>[\\d.]+)?"
+    }
+  },
+  "Gatsby": {
+    "category": "framework",
+    "meta": {
+      "generator": "Gatsby ?(?P<version>[\\d.]+)?"
+    },
+    "html": [
+      "___gatsby"
+    ]
+  },
+  "FastAPI": {
+    "category": "framework",
+    "html": [
+      "/docs/oauth2-redirect",
+      "FastAPI - Swagger UI"
+    ]
+  },
+  "Phoenix": {
+    "category": "framework",
+    "html": [
+      "phx-main",
+      "data-phx-session"
+    ]
+  },
+  "Supabase": {
+    "category": "baas",
+    "html": [
+      "\\.supabase\\.co"
+    ]
+  },
+  "Firebase": {
+    "category": "baas",
+    "html": [
+      "firebaseapp\\.com",
+      "firebase(?:-app)?\\.js"
+    ]
+  },
+  "Auth0": {
+    "category": "auth",
+    "html": [
+      "\\.auth0\\.com",
+      "auth0-spa-js"
+    ]
+  },
+  "Clerk": {
+    "category": "auth",
+    "html": [
+      "clerk\\.(?:accounts\\.dev|browser\\.js)",
+      "__clerk"
+    ]
+  },
+  "Sentry": {
+    "category": "monitoring",
+    "html": [
+      "browser\\.sentry-cdn\\.com",
+      "Sentry\\.init"
+    ]
+  },
+  "Traefik": {
+    "category": "proxy",
+    "headers": {
+      "server": "traefik"
+    }
+  },
+  "HAProxy": {
+    "category": "proxy",
+    "headers": {
+      "server": "HAProxy"
+    }
+  }
 }

@@ -15,9 +15,9 @@ ALL_CHECKS = (
     # endpoint / host level
     "xxe", "auth", "host_header", "access", "idor", "graphql", "cors", "headers", "exposure",
     # passive analysis
-    "disclosure", "secrets", "jwt", "csrf", "deserialization", "data_exposure",
+    "disclosure", "secrets", "jwt", "csrf", "deserialization", "data_exposure", "js_analysis",
     # browser + hunting
-    "dom_xss", "anomaly",
+    "dom_xss", "prototype_pollution", "cache_deception", "anomaly",
 )
 
 
@@ -49,3 +49,25 @@ class ScanConfig:
 
     def enabled(self, check: str) -> bool:
         return check in self.checks
+
+
+PROFILES = {
+    "safe": "production-friendly: <=5 req/s, 5 concurrent, no time-based payloads, no anomaly fuzzing",
+    "standard": "balanced defaults",
+    "thorough": "lab/staging: hidden-parameter discovery and the full content-discovery wordlist",
+}
+
+
+def apply_profile(cfg: ScanConfig, profile: str, explicit_wordlist: bool = False) -> ScanConfig:
+    if profile == "safe":
+        cfg.rate_limit = min(cfg.rate_limit, 5.0)
+        cfg.concurrency = min(cfg.concurrency, 5)
+        cfg.timing_checks = False
+        cfg.checks = tuple(c for c in cfg.checks if c != "anomaly")
+    elif profile == "thorough":
+        cfg.param_discovery = True
+        if not explicit_wordlist and cfg.discovery_wordlist is not None:
+            cfg.discovery_wordlist = DATA_DIR / "wordlists" / "common.txt"
+    elif profile != "standard":
+        raise ValueError(f"unknown profile {profile!r}: {', '.join(PROFILES)}")
+    return cfg

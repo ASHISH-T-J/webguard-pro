@@ -411,5 +411,232 @@
     "severity": "INFO",
     "match": "swagger-ui|Swagger UI",
     "cwe": "CWE-200"
+  },
+  "env-backup": {
+    "path": "/.env.bak",
+    "name": "Exposed .env backup",
+    "severity": "CRITICAL",
+    "match": "(?m)^[A-Z][A-Z0-9_]{2,}=.+",
+    "negative": "<html",
+    "cwe": "CWE-200"
+  },
+  "env-dev": {
+    "path": "/.env.dev",
+    "name": "Exposed .env.dev",
+    "severity": "CRITICAL",
+    "match": "(?m)^[A-Z][A-Z0-9_]{2,}=.+",
+    "negative": "<html",
+    "cwe": "CWE-200"
+  },
+  "git-logs": {
+    "path": "/.git/logs/HEAD",
+    "name": "Exposed Git reflog",
+    "severity": "HIGH",
+    "match": "^[0-9a-f]{40} [0-9a-f]{40} ",
+    "cwe": "CWE-538"
+  },
+  "gitlab-ci": {
+    "path": "/.gitlab-ci.yml",
+    "name": "Exposed GitLab CI config",
+    "severity": "LOW",
+    "match": "(?m)^(?:stages|script|image|variables):",
+    "negative": "<html",
+    "cwe": "CWE-200"
+  },
+  "github-workflow": {
+    "path": "/.github/workflows/main.yml",
+    "name": "Exposed GitHub Actions workflow",
+    "severity": "LOW",
+    "match": "(?m)^(?:on|jobs):",
+    "negative": "<html",
+    "cwe": "CWE-200"
+  },
+  "circleci": {
+    "path": "/.circleci/config.yml",
+    "name": "Exposed CircleCI config",
+    "severity": "LOW",
+    "match": "(?m)^(?:version|jobs|workflows):",
+    "negative": "<html",
+    "cwe": "CWE-200"
+  },
+  "travis": {
+    "path": "/.travis.yml",
+    "name": "Exposed Travis CI config",
+    "severity": "LOW",
+    "match": "(?m)^(?:language|script|install):",
+    "negative": "<html",
+    "cwe": "CWE-200"
+  },
+  "vscode-sftp": {
+    "path": "/.vscode/sftp.json",
+    "name": "Exposed VS Code SFTP config (credentials)",
+    "severity": "CRITICAL",
+    "match": "\"(?:password|privateKeyPath|host)\"\\s*:",
+    "cwe": "CWE-522"
+  },
+  "idea-workspace": {
+    "path": "/.idea/workspace.xml",
+    "name": "Exposed JetBrains workspace",
+    "severity": "LOW",
+    "match": "<project version=",
+    "cwe": "CWE-538"
+  },
+  "laravel-log": {
+    "path": "/storage/logs/laravel.log",
+    "name": "Exposed Laravel log",
+    "severity": "HIGH",
+    "match": "\\[\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\] \\w+\\.(?:ERROR|INFO|DEBUG)",
+    "cwe": "CWE-532"
+  },
+  "wp-debug-log": {
+    "path": "/wp-content/debug.log",
+    "name": "Exposed WordPress debug log",
+    "severity": "MEDIUM",
+    "match": "PHP (?:Fatal error|Warning|Notice)",
+    "cwe": "CWE-532"
+  },
+  "error-log": {
+    "path": "/error_log",
+    "name": "Exposed PHP error_log",
+    "severity": "MEDIUM",
+    "match": "PHP (?:Fatal error|Warning|Notice|Parse error)",
+    "cwe": "CWE-532"
+  },
+  "rails-database-yml": {
+    "path": "/config/database.yml",
+    "name": "Exposed Rails database.yml",
+    "severity": "CRITICAL",
+    "match": "(?m)^\\s*(?:adapter|password):",
+    "negative": "<html",
+    "cwe": "CWE-522"
+  },
+  "spring-properties": {
+    "path": "/application.properties",
+    "name": "Exposed Spring application.properties",
+    "severity": "HIGH",
+    "match": "(?m)^spring\\.[\\w.]+=",
+    "cwe": "CWE-200"
+  },
+  "spring-yml": {
+    "path": "/application.yml",
+    "name": "Exposed Spring application.yml",
+    "severity": "HIGH",
+    "match": "(?m)^spring:",
+    "negative": "<html",
+    "cwe": "CWE-200"
+  },
+  "appsettings": {
+    "path": "/appsettings.json",
+    "name": "Exposed ASP.NET appsettings.json",
+    "severity": "HIGH",
+    "match": "\"(?:ConnectionStrings|Logging)\"\\s*:",
+    "cwe": "CWE-200"
+  },
+  "config-json": {
+    "path": "/config.json",
+    "name": "Exposed config.json",
+    "severity": "MEDIUM",
+    "match": "\"(?:api_?key|secret|password|token|database)\"\\s*:",
+    "cwe": "CWE-200"
+  },
+  "aws-config": {
+    "path": "/.aws/config",
+    "name": "Exposed AWS CLI config",
+    "severity": "MEDIUM",
+    "match": "\\[(?:default|profile [^\\]]+)\\]",
+    "negative": "<html",
+    "cwe": "CWE-200"
+  },
+  "docker-config": {
+    "path": "/.docker/config.json",
+    "name": "Exposed Docker registry credentials",
+    "severity": "CRITICAL",
+    "match": "\"auths\"\\s*:",
+    "cwe": "CWE-522"
+  },
+  "kube-config": {
+    "path": "/.kube/config",
+    "name": "Exposed kubeconfig",
+    "severity": "CRITICAL",
+    "match": "(?m)^(?:apiVersion: v1|clusters:)",
+    "negative": "<html",
+    "cwe": "CWE-522"
+  },
+  "terraform-state": {
+    "path": "/terraform.tfstate",
+    "name": "Exposed Terraform state",
+    "severity": "CRITICAL",
+    "match": "\"terraform_version\"",
+    "cwe": "CWE-200"
+  },
+  "backup-zip": {
+    "path": "/backup.zip",
+    "name": "Exposed backup archive",
+    "severity": "HIGH",
+    "match": "^PK\\x03\\x04",
+    "cwe": "CWE-530"
+  },
+  "site-zip": {
+    "path": "/site.zip",
+    "name": "Exposed site archive",
+    "severity": "HIGH",
+    "match": "^PK\\x03\\x04",
+    "cwe": "CWE-530"
+  },
+  "web-inf": {
+    "path": "/WEB-INF/web.xml",
+    "name": "Exposed WEB-INF/web.xml",
+    "severity": "HIGH",
+    "match": "<web-app",
+    "cwe": "CWE-200"
+  },
+  "next-build-manifest": {
+    "path": "/_next/static/development/_buildManifest.js",
+    "name": "Next.js development build exposed",
+    "severity": "LOW",
+    "match": "__BUILD_MANIFEST",
+    "cwe": "CWE-489"
+  },
+  "vite-dev": {
+    "path": "/@vite/client",
+    "name": "Vite dev server exposed",
+    "severity": "MEDIUM",
+    "match": "import\\.meta\\.hot|vite",
+    "cwe": "CWE-489"
+  },
+  "env-js": {
+    "path": "/env.js",
+    "name": "Exposed runtime env.js",
+    "severity": "LOW",
+    "match": "(?i)window\\.(?:__env|env|_env_)\\s*=",
+    "cwe": "CWE-200"
+  },
+  "admin-api-users": {
+    "path": "/api/admin/users",
+    "name": "Admin users API reachable",
+    "severity": "HIGH",
+    "match": "\"(?:email|username)\"\\s*:",
+    "cwe": "CWE-306"
+  },
+  "phpunit-dir": {
+    "path": "/vendor/phpunit/phpunit/src/Util/PHP/",
+    "name": "PHPUnit directory exposed in web root",
+    "severity": "MEDIUM",
+    "match": "Index of|eval-stdin\\.php",
+    "cwe": "CWE-538"
+  },
+  "solr-admin": {
+    "path": "/solr/admin/cores?wt=json",
+    "name": "Solr admin API exposed",
+    "severity": "HIGH",
+    "match": "\"responseHeader\"",
+    "cwe": "CWE-306"
+  },
+  "consul": {
+    "path": "/v1/agent/self",
+    "name": "Consul agent API exposed",
+    "severity": "HIGH",
+    "match": "\"(?:Config|Member)\"\\s*:",
+    "cwe": "CWE-306"
   }
 }

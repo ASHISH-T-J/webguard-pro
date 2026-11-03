@@ -2,8 +2,8 @@
   "target": "OWASP Juice Shop (bkimminich/juice-shop:latest)",
   "reasoner": "local",
   "budget_requests": null,
-  "seconds": 188.4,
-  "requests": 3715,
+  "seconds": 223.6,
+  "requests": 5197,
   "recall": "15/15",
   "ground_truth": {
     "SQL injection in product search (/rest/products/search?q)": true,
@@ -28,7 +28,7 @@
     "HIGH CERTAIN Credentials / password hashes exposed in API response @ http://127.0.0.1:3000/rest/memories ",
     "HIGH CERTAIN Credentials / password hashes exposed in API response @ http://127.0.0.1:3000/support/logs/audit.json ",
     "HIGH FIRM SQL injection (error-based, SQLite) @ http://127.0.0.1:3000/rest/products/search q",
-    "MEDIUM CERTAIN JWT weaknesses: sensitive claims in payload @ http://127.0.0.1:3000/#jwt-563969a1 ",
+    "MEDIUM CERTAIN JWT weaknesses: sensitive claims in payload @ http://127.0.0.1:3000/#jwt-2de2b3e7 ",
     "MEDIUM CERTAIN Open redirect @ http://127.0.0.1:3000/redirect to",
     "MEDIUM FIRM Administrative/internal API accessible without authentication @ http://127.0.0.1:3000/rest/admin/application-configuration ",
     "MEDIUM FIRM Bulk personal data exposed in API response @ http://127.0.0.1:3000/rest/memories#pii ",
@@ -62,7 +62,7 @@
       "actions": [
         "fingerprint"
       ],
-      "observation": "Live: http://127.0.0.1:3000 [200] title='OWASP Juice Shop' tech=?"
+      "observation": "Environment: development (from hostname); profile rate 100 req/s, timing checks on; Live: http://127.0.0.1:3000 [200] title='OWASP Juice Shop' tech=?"
     },
     {
       "step": 2,
@@ -76,7 +76,7 @@
         "nlp-classify",
         "grep"
       ],
-      "observation": "Mapped 189 URLs, 0 forms, 60 JS files, 140 JS endpoints, 17 API write calls, 38 SPA routes, 46 injectable inputs; Page types: content=95, stack_trace=29, api_json=24, not_found=13, error=10, waf_block=6, directory_listing=5, docs=2, password_reset=2, admin=1, login=1, registration=1; Parameter semantics: template=16, id=11, auth=6, email=3, redirect=2, number=2, data=2, flag=1, search=1, file=1, sort=1; Login pages: http://127.0.0.1:3000/rest/user/change-password?current=; grep[dom-sinks] Angular sanitizer bypass: bypassSecurityTrustScript( (1 location(s)); grep[dom-sinks] Angular sanitizer bypass: bypassSecurityTrustStyle( (1 location(s)); grep[dom-sinks] document.write: document.write( (1 location(s)); grep[dom-sinks] innerHTML/outerHTML assignment: .outerHTML= (1 location(s)); grep[dom-sinks] location assignment: location=d,this._outsideClickDispatcher=f,this._animationsDisabled=m, (1 location(s)); grep[dom-sinks] location assignment: location=p$1(dv) (1 location(s)); grep[dom-sinks] location assignment: location=p(Cl) (1 location(s)); grep[dom-sinks] location assignment: location=p(Rt$1) (1 location(s))"
+      "observation": "Live: http://127.0.0.1:3000 [200] title='OWASP Juice Shop' tech=?; Mapped 189 URLs, 0 forms, 60 JS files, 140 JS endpoints, 17 API write calls, 38 SPA routes, 70 injectable inputs; Page types: content=95, stack_trace=29, api_json=24, not_found=13, error=10, waf_block=6, directory_listing=5, docs=2, password_reset=2, admin=1, login=1, registration=1; Parameter semantics: redirect=18, template=16, email=11, id=11, auth=6, number=2, data=2, flag=1, search=1, file=1, sort=1; Login pages: http://127.0.0.1:3000/rest/user/change-password?current=; JS analysis: 61 files (1 lazy chunks), 0 source map(s), 0 new endpoint(s), 0 DOM flow/postMessage lead(s), libraries: none, client-read params: access_token, apiKey, current, email, new, repeat; grep[dom-sinks] Angular sanitizer bypass: bypassSecurityTrustScript( (1 location(s)); grep[dom-sinks] Angular sanitizer bypass: bypassSecurityTrustStyle( (1 location(s)); grep[dom-sinks] document.write: document.write( (1 location(s)); grep[dom-sinks] innerHTML/outerHTML assignment: .outerHTML= (1 location(s)); grep[dom-sinks] location assignment: location=d,this._outsideClickDispatcher=f,this._animationsDisabled=m, (1 location(s)); grep[dom-sinks] location assignment: location=p$1(dv) (1 location(s)); grep[dom-sinks] location assignment: location=p(Cl) (1 location(s)); grep[dom-sinks] location assignment: location=p(Rt$1) (1 location(s))"
     },
     {
       "step": 3,
@@ -103,7 +103,7 @@
         "forbidden_bypass:http://127.0.0.1:3000/rest/image-captcha/",
         "forbidden_bypass:http://127.0.0.1:3000/rest/wallet/balance"
       ],
-      "observation": "18 test(s), 513 requests; 6 new finding(s): LOW CORS allows any origin (*) on API @ /; INFO Unlinked content discovered @ /; INFO Swagger UI / API documentation exposed @ /api-docs/; INFO security.txt present @ /.well-known/security.txt; LOW Prometheus metrics exposed @ /metrics; INFO Missing security headers @ /"
+      "observation": "18 test(s), 544 requests; 6 new finding(s): INFO Missing security headers @ /; LOW Prometheus metrics exposed @ /metrics; LOW CORS allows any origin (*) on API @ /; INFO Swagger UI / API documentation exposed @ /api-docs/; INFO Unlinked content discovered @ /; INFO security.txt present @ /.well-known/security.txt"
     },
     {
       "step": 4,
@@ -143,13 +143,13 @@
         "auth_bypass:POST http://127.0.0.1:3000/rest/user/login [json]",
         "passive_analysis:all-responses"
       ],
-      "observation": "2 test(s), 3 requests; 17 new finding(s): LOW Directory listing enabled @ /.well-known/csaf; HIGH Credentials / password hashes exposed in API response @ /rest/memories; MEDIUM Administrative/internal API accessible without authentication @ /rest/admin/application-configuration; MEDIUM JWT weaknesses: sensitive claims in payload @ /; LOW Generic JS Stack Frame @ /; LOW Directory listing enabled @ /.well-known"
+      "observation": "2 test(s), 3 requests; 17 new finding(s): CRITICAL Authentication bypass via SQL injection @ /rest/user/login [email]; INFO Exposed secret: Internal IP Address @ /; LOW Directory listing enabled @ /ftp; HIGH Credentials / password hashes exposed in API response @ /rest/memories; LOW Express Error Page Stack Trace @ /; MEDIUM Bulk personal data exposed in API response @ /rest/memories"
     },
     {
       "step": 7,
       "phase": "input",
       "engine": "local",
-      "thought": "Input validation: 62 candidate test(s). Prioritising by likelihood x impact. [inject GET http://127.0.0.1:3000/api/Challenges/ [query] key] 'key' looks like auth (p=1.00) -> try sqli, nosqli, xss first. [inject GET http://127.0.0.1:3000/rest/user/security-question [query] email] 'email' looks like email (p=1.00) -> try sqli, nosqli, xss first. [inject GET http://127.0.0.1:3000/rest/products/search [query] q] 'q' looks like search (p=1.00) -> try sqli, xss, nosqli first. (+22 more)",
+      "thought": "Input validation: 86 candidate test(s). Prioritising by likelihood x impact. [inject GET http://127.0.0.1:3000/api/Challenges/ [query] key] 'key' looks like auth (p=1.00) -> try sqli, nosqli, xss first. [inject GET http://127.0.0.1:3000/rest/user/security-question [query] email] 'email' looks like email (p=1.00) -> try sqli, nosqli, xss first. [inject GET http://127.0.0.1:3000/rest/products/search [query] q] 'q' looks like search (p=1.00) -> try sqli, xss, nosqli first. (+22 more)",
       "actions": [
         "inject:GET http://127.0.0.1:3000/api/Challenges/ [query] key",
         "inject:GET http://127.0.0.1:3000/rest/user/security-question [query] email",
@@ -170,21 +170,29 @@
         "inject:PATCH http://127.0.0.1:3000/reviews [json] author",
         "inject:POST http://127.0.0.1:3000/reviews [json] author",
         "inject:PUT http://127.0.0.1:3000/1/reviews [json] author",
-        "inject:POST http://127.0.0.1:3000/data-export [json] file",
-        "inject:POST http://127.0.0.1:3000/rest/2fa/disable [json] name",
-        "inject:POST http://127.0.0.1:3000/rest/2fa/setup [json] name",
-        "inject:POST http://127.0.0.1:3000/rest/2fa/verify [json] name",
-        "inject:POST http://127.0.0.1:3000/rest/deluxe-membership [json] name",
-        "inject:PUT http://127.0.0.1:3000/rest/continue-code-findIt/apply/ [json] name"
+        "inject:GET http://127.0.0.1:3000/ [header] User-Agent",
+        "inject:GET http://127.0.0.1:3000/.1 [header] User-Agent",
+        "inject:GET http://127.0.0.1:3000/1/delivery-status [header] User-Agent",
+        "inject:GET http://127.0.0.1:3000/1/reviews [header] User-Agent",
+        "inject:GET http://127.0.0.1:3000/login [header] User-Agent",
+        "inject:GET http://127.0.0.1:3000/order-history [header] User-Agent"
       ],
-      "observation": "25 test(s), 1876 requests; 4 new finding(s): MEDIUM Open redirect @ /redirect [to]; LOW Anomalous input handling (server errors) @ /rest/user/security-question [email]; LOW Anomalous input handling (server errors) @ /api/Challenges/ [key]; HIGH SQL injection (error-based, SQLite) @ /rest/products/search [q]"
+      "observation": "25 test(s), 1989 requests; 4 new finding(s): MEDIUM Open redirect @ /redirect [to]; LOW Anomalous input handling (server errors) @ /api/Challenges/ [key]; HIGH SQL injection (error-based, SQLite) @ /rest/products/search [q]; LOW Anomalous input handling (server errors) @ /rest/user/security-question [email]"
     },
     {
       "step": 8,
       "phase": "input",
       "engine": "local",
-      "thought": "Input validation: 37 candidate test(s). Prioritising by likelihood x impact. [inject PUT http://127.0.0.1:3000/rest/continue-code-fixIt/apply/ [json] name] 'name' looks like template (p=1.00) -> try ssti, xss, sqli first. [inject PUT http://127.0.0.1:3000/rest/continue-code/apply/ [json] name] 'name' looks like template (p=1.00) -> try ssti, xss, sqli first. [inject POST http://127.0.0.1:3000/rest/user/reset-password [json] new] 'new' looks like template (p=0.97) -> try ssti, xss, sqli first. (+22 more)",
+      "thought": "Input validation: 61 candidate test(s). Prioritising by likelihood x impact. [inject GET http://127.0.0.1:3000/track-result [header] User-Agent] 'User-Agent' looks like email (p=0.75) -> try lfi, sqli, nosqli first. [inject GET http://127.0.0.1:3000/track-result/new [header] User-Agent] 'User-Agent' looks like email (p=0.75) -> try lfi, sqli, nosqli first. [inject POST http://127.0.0.1:3000/data-export [json] file] 'file' looks like file (p=1.00) -> try lfi, ssrf, xss first. (+22 more)",
       "actions": [
+        "inject:GET http://127.0.0.1:3000/track-result [header] User-Agent",
+        "inject:GET http://127.0.0.1:3000/track-result/new [header] User-Agent",
+        "inject:POST http://127.0.0.1:3000/data-export [json] file",
+        "inject:POST http://127.0.0.1:3000/rest/2fa/disable [json] name",
+        "inject:POST http://127.0.0.1:3000/rest/2fa/setup [json] name",
+        "inject:POST http://127.0.0.1:3000/rest/2fa/verify [json] name",
+        "inject:POST http://127.0.0.1:3000/rest/deluxe-membership [json] name",
+        "inject:PUT http://127.0.0.1:3000/rest/continue-code-findIt/apply/ [json] name",
         "inject:PUT http://127.0.0.1:3000/rest/continue-code-fixIt/apply/ [json] name",
         "inject:PUT http://127.0.0.1:3000/rest/continue-code/apply/ [json] name",
         "inject:POST http://127.0.0.1:3000/rest/user/reset-password [json] new",
@@ -201,7 +209,16 @@
         "inject:POST http://127.0.0.1:3000/rest/user/reset-password [json] email",
         "inject:PUT http://127.0.0.1:3000/rest/continue-code-findIt/apply/ [json] id",
         "inject:PUT http://127.0.0.1:3000/rest/continue-code-fixIt/apply/ [json] id",
-        "inject:PUT http://127.0.0.1:3000/rest/continue-code/apply/ [json] id",
+        "inject:PUT http://127.0.0.1:3000/rest/continue-code/apply/ [json] id"
+      ],
+      "observation": "25 test(s), 963 requests; no new findings"
+    },
+    {
+      "step": 9,
+      "phase": "input",
+      "engine": "local",
+      "thought": "Input validation: 36 candidate test(s). Prioritising by likelihood x impact. [xxe http://127.0.0.1:3000/1/delivery-status] endpoint accepts a request body - check whether it parses XML with external entities. [xxe http://127.0.0.1:3000/1/reviews] endpoint accepts a request body - check whether it parses XML with external entities. [xxe http://127.0.0.1:3000/data-export] endpoint accepts a request body - check whether it parses XML with external entities. (+22 more)",
+      "actions": [
         "xxe:http://127.0.0.1:3000/1/delivery-status",
         "xxe:http://127.0.0.1:3000/1/reviews",
         "xxe:http://127.0.0.1:3000/data-export",
@@ -209,19 +226,35 @@
         "xxe:http://127.0.0.1:3000/rest/2fa/disable",
         "xxe:http://127.0.0.1:3000/rest/2fa/setup",
         "xxe:http://127.0.0.1:3000/rest/2fa/verify",
-        "xxe:http://127.0.0.1:3000/rest/basket/1/checkout"
-      ],
-      "observation": "25 test(s), 676 requests; no new findings"
-    },
-    {
-      "step": 9,
-      "phase": "input",
-      "engine": "local",
-      "thought": "Input validation: 12 candidate test(s). Prioritising by likelihood x impact. [xxe http://127.0.0.1:3000/rest/basket/1/coupon/1] endpoint accepts a request body - check whether it parses XML with external entities. [xxe http://127.0.0.1:3000/rest/continue-code-findIt/apply/] endpoint accepts a request body - check whether it parses XML with external entities. [inject POST http://127.0.0.1:3000/rest/user/reset-password [json] answer] 'answer' looks like sort (p=0.40) -> try sqli, xss, ssti first. (+9 more)",
-      "actions": [
+        "xxe:http://127.0.0.1:3000/rest/basket/1/checkout",
         "xxe:http://127.0.0.1:3000/rest/basket/1/coupon/1",
         "xxe:http://127.0.0.1:3000/rest/continue-code-findIt/apply/",
         "inject:POST http://127.0.0.1:3000/rest/user/reset-password [json] answer",
+        "inject:GET http://127.0.0.1:3000/ [header] Referer",
+        "inject:GET http://127.0.0.1:3000/.1 [header] Referer",
+        "inject:GET http://127.0.0.1:3000/1/delivery-status [header] Referer",
+        "inject:GET http://127.0.0.1:3000/1/reviews [header] Referer",
+        "inject:GET http://127.0.0.1:3000/login [header] Referer",
+        "inject:GET http://127.0.0.1:3000/order-history [header] Referer",
+        "inject:GET http://127.0.0.1:3000/track-result [header] Referer",
+        "inject:GET http://127.0.0.1:3000/track-result/new [header] Referer",
+        "inject:GET http://127.0.0.1:3000/ [header] X-Forwarded-For",
+        "inject:GET http://127.0.0.1:3000/.1 [header] X-Forwarded-For",
+        "inject:GET http://127.0.0.1:3000/1/delivery-status [header] X-Forwarded-For",
+        "inject:GET http://127.0.0.1:3000/1/reviews [header] X-Forwarded-For",
+        "inject:GET http://127.0.0.1:3000/login [header] X-Forwarded-For",
+        "inject:GET http://127.0.0.1:3000/order-history [header] X-Forwarded-For"
+      ],
+      "observation": "25 test(s), 775 requests; no new findings"
+    },
+    {
+      "step": 10,
+      "phase": "input",
+      "engine": "local",
+      "thought": "Input validation: 11 candidate test(s). Prioritising by likelihood x impact. [inject GET http://127.0.0.1:3000/track-result [header] X-Forwarded-For] 'X-Forwarded-For' looks like redirect (p=1.00) -> try redirect, crlf, xss first. [inject GET http://127.0.0.1:3000/track-result/new [header] X-Forwarded-For] 'X-Forwarded-For' looks like redirect (p=1.00) -> try redirect, crlf, xss first. [inject POST http://127.0.0.1:3000/data-export [json] format] 'format' looks like redirect (p=0.90) -> try redirect, crlf, xss first. (+8 more)",
+      "actions": [
+        "inject:GET http://127.0.0.1:3000/track-result [header] X-Forwarded-For",
+        "inject:GET http://127.0.0.1:3000/track-result/new [header] X-Forwarded-For",
         "inject:POST http://127.0.0.1:3000/data-export [json] format",
         "host_header:http://127.0.0.1:3000/",
         "inject:GET http://127.0.0.1:3000/rest/user/change-password [query] current",
@@ -232,20 +265,26 @@
         "inject:PUT http://127.0.0.1:3000/rest/basket/1/coupon/1 [json] id",
         "inject:PUT http://127.0.0.1:3000/rest/basket/1/coupon/1 [json] quantity"
       ],
-      "observation": "12 test(s), 121 requests; no new findings"
-    },
-    {
-      "step": 10,
-      "phase": "authz_client",
-      "engine": "local",
-      "thought": "Authorization & client-side: 1 candidate test(s). Prioritising by likelihood x impact. [dom_xss browser] verify DOM XSS in headless Chromium (38 SPA routes, 15 DOM sink patterns found by grep).",
-      "actions": [
-        "dom_xss:browser"
-      ],
-      "observation": "1 test(s), 122 requests; 1 new finding(s): HIGH DOM-based cross-site scripting (SPA route #/search param q) @ / [q]"
+      "observation": "11 test(s), 218 requests; no new findings"
     },
     {
       "step": 11,
+      "phase": "authz_client",
+      "engine": "local",
+      "thought": "Authorization & client-side: 7 candidate test(s). Prioritising by likelihood x impact. [dom_xss browser] verify DOM XSS in headless Chromium (38 SPA routes, 15 DOM sink patterns found by grep). [prototype_pollution browser] URL/hash parsers merging __proto__ keys (client-side prototype pollution, verified in headless Chromium). [cache_deception http://127.0.0.1:3000/accounting] dynamic page - does a static-looking suffix get it cached (web cache deception)?. (+4 more)",
+      "actions": [
+        "dom_xss:browser",
+        "prototype_pollution:browser",
+        "cache_deception:http://127.0.0.1:3000/accounting",
+        "cache_deception:http://127.0.0.1:3000/order-completion",
+        "cache_deception:http://127.0.0.1:3000/order-history",
+        "cache_deception:http://127.0.0.1:3000/order-summary",
+        "cache_deception:http://127.0.0.1:3000/orders"
+      ],
+      "observation": "7 test(s), 240 requests; 1 new finding(s): HIGH DOM-based cross-site scripting (SPA route #/search param q) @ / [q]"
+    },
+    {
+      "step": 12,
       "phase": "verify",
       "engine": "local",
       "thought": "Verification: 2 candidate test(s). Prioritising by likelihood x impact. [verify 33b9293dbb53ff51] independently re-test 'Open redirect' on /redirect [to]. [verify d276cc3aec6a207c] independently re-test 'SQL injection (error-based, SQLite)' on /rest/products/search [q].",
@@ -253,10 +292,10 @@
         "verify:33b9293dbb53ff51",
         "verify:d276cc3aec6a207c"
       ],
-      "observation": "2 test(s), 17 requests; no new findings"
+      "observation": "2 test(s), 19 requests; no new findings"
     },
     {
-      "step": 12,
+      "step": 13,
       "phase": "analysis",
       "engine": "local",
       "thought": "Consolidate: group findings by root cause, look for combinations that form attack chains, and score risk by severity x confidence x ML true-positive probability x breadth.",
@@ -266,15 +305,17 @@
         "risk-scoring",
         "ml-triage"
       ],
-      "observation": "28 findings -> 28 root-cause issues, 3 attack chain(s); WSTG coverage 31/33 areas tested, 14 vulnerable. Coverage gap: 8 authenticated endpoint(s) need credentials."
+      "observation": "28 findings -> 28 root-cause issues, 3 attack chain(s); WSTG coverage 32/34 areas tested, 14 vulnerable. Coverage gap: 8 authenticated endpoint(s) need credentials."
     }
   ],
   "facts": [
+    "Environment: development (from hostname); profile rate 100 req/s, timing checks on",
     "Live: http://127.0.0.1:3000 [200] title='OWASP Juice Shop' tech=?",
-    "Mapped 189 URLs, 0 forms, 60 JS files, 140 JS endpoints, 17 API write calls, 38 SPA routes, 46 injectable inputs",
+    "Mapped 189 URLs, 0 forms, 60 JS files, 140 JS endpoints, 17 API write calls, 38 SPA routes, 70 injectable inputs",
     "Page types: content=95, stack_trace=29, api_json=24, not_found=13, error=10, waf_block=6, directory_listing=5, docs=2, password_reset=2, admin=1, login=1, registration=1",
-    "Parameter semantics: template=16, id=11, auth=6, email=3, redirect=2, number=2, data=2, flag=1, search=1, file=1, sort=1",
+    "Parameter semantics: redirect=18, template=16, email=11, id=11, auth=6, number=2, data=2, flag=1, search=1, file=1, sort=1",
     "Login pages: http://127.0.0.1:3000/rest/user/change-password?current=",
+    "JS analysis: 61 files (1 lazy chunks), 0 source map(s), 0 new endpoint(s), 0 DOM flow/postMessage lead(s), libraries: none, client-read params: access_token, apiKey, current, email, new, repeat",
     "grep[dom-sinks] Angular sanitizer bypass: bypassSecurityTrustScript( (1 location(s))",
     "grep[dom-sinks] Angular sanitizer bypass: bypassSecurityTrustStyle( (1 location(s))",
     "grep[dom-sinks] document.write: document.write( (1 location(s))",

@@ -8,6 +8,7 @@ or SQL: behaviour is simulated.
 from __future__ import annotations
 
 import html
+import json
 import re
 import threading
 import time
@@ -34,6 +35,12 @@ def _jwt(claims: dict, secret: str = "secret") -> str:
 
 
 TOKEN = _jwt({"sub": "1", "role": "customer"})
+CACHE: dict[str, str] = {}  # simulated CDN cache in front of /account (caches anything ending in .css)
+PP_PARSER = ("function parse(q){const o={};q.replace(/^[?#]/,'').split('&').forEach(function(kv){"
+             "const p=kv.split('=');const keys=decodeURIComponent(p[0]).replace(/\\]/g,'').split(/\\[|\\./);"
+             "let cur=o;for(let i=0;i<keys.length-1;i++){%s cur[keys[i]]=cur[keys[i]]||{};cur=cur[keys[i]];}"
+             "cur[keys[keys.length-1]]=decodeURIComponent(p[1]||'');});return o;}"
+             "parse(location.search); parse(location.hash);")
 
 INDEX = """<html><head><title>Shop</title>
 <script src="/static/app.js"></script></head><body>
@@ -46,12 +53,24 @@ INDEX = """<html><head><title>Shop</title>
 <a href="/profile?color=red">profile</a> <a href="/news?id=2">news</a> <a href="/logout">logout</a>
 <a href="/users/search?name=alice">user search</a> <a href="/safe/users/search?name=alice">safe user search</a>
 <a href="/reset?email=a@b.c">reset</a> <a href="/safe/reset?email=a@b.c">safe reset</a>
+<a href="/account">account</a> <a href="/safe/account">safe account</a> <a href="/pp">pp</a> <a href="/safe/pp">safe pp</a>
+<a href="/oauth/authorize?client_id=web&redirect_uri=https://shop.test/callback&response_type=code">sso</a>
+<a href="/safe/oauth/authorize?client_id=web&redirect_uri=https://shop.test/callback&response_type=code">safe sso</a>
+<a href="/waf/search?q=shoes">protected search</a>
+<a href="/app">app</a> <a href="/safe/app">safe app</a> <a href="/track">track</a> <a href="/safe/track">safe track</a> <a href="/welcome">welcome</a> <a href="/safe/welcome">safe welcome</a>
 <a href="/admin">admin</a> <a href="/safe/admin">safe admin</a> <a href="/dom">dom</a> <a href="/safe/dom">safe dom</a>
 <form action="/profile/update" method="post"><input name="nickname" value="bob"><input type="submit"></form>
 <form action="/comment" method="post"><input name="author" value="anon"><textarea name="body"></textarea>
 <input type="hidden" name="csrf_token" value="abc123"><input type="submit" value="Send"></form>
 </body></html>"""
 
+LEGACY_JS = """function loadAdmin(){ return import("./chunks/admin.chunk.js"); }
+//# sourceMappingURL=legacy.js.map
+"""
+SOURCE_MAP = json.dumps({"version": 3, "file": "legacy.js", "sources": ["src/config.ts", "src/admin.ts"], "sourcesContent": [
+    'export const apiKey = "Q9f3kLm2Xz8RtYw4Vb7Nc1Hd6Js5Pa0E";  // TODO move to vault',
+    'export const exportUrl = "/internal/export?format=csv";']})
+ADMIN_CHUNK = 'fetch("/internal/reports?period=daily").then(r => r.json());'
 APP_JS = """const API = "/api/v1/users?id=1"; const KEY = "AKIAIOSFODNN7ABCDXYZ";
 fetch('/api/v1/status'); // internal endpoint
 const u1 = `${host}/api/users/1`, u2 = "/safe/api/users/1", gql = "/graphql";
@@ -147,6 +166,19 @@ class Handler(BaseHTTPRequestHandler):
             if self.headers.get("X-Original-URL") == "/admin":  # vulnerable front-end ACL bypass
                 return self._send(page("<h1>Admin panel</h1><table><tr><td>alice</td><td>delete</td></tr></table>", "Admin"))
             return self._send(INDEX, headers={"Set-Cookie": "sessionid=abc; Path=/", "Server": "nginx/1.18.0"})
+        if p in ("/track", "/safe/track"):  # visit logging: INSERT INTO visits(ua) VALUES ('<User-Agent>')
+            ua = self.headers.get("User-Agent", "")
+            if p == "/track" and ua.count("'") % 2 == 1:
+                return self._send(page("SQLITE_ERROR: unrecognized token: \"'\""), 500)
+            return self._send(page("<p>Visit recorded.</p>"))
+        if p in ("/welcome", "/safe/welcome"):  # renders Referer and the 'theme' cookie
+            ref = self.headers.get("Referer", "")
+            cookies = dict(c.strip().split("=", 1) for c in self.headers.get("Cookie", "").split(";") if "=" in c)
+            theme = cookies.get("theme", "light")
+            if p == "/safe/welcome":
+                ref, theme = html.escape(ref), html.escape(theme)
+            return self._send(f'<html><body class="{theme}"><p>You came from {ref}</p></body></html>',
+                              headers={"Set-Cookie": "theme=light; Path=/; SameSite=Lax"})
         if p in ("/admin", "/safe/admin"):
             return self._send(page("<h1>403 Forbidden</h1>", "Forbidden"), 403)
         if p in ("/api/admin/config", "/safe/api/admin/config"):
@@ -190,6 +222,55 @@ class Handler(BaseHTTPRequestHandler):
             js = f"document.getElementById('out').{sink} = decodeURIComponent(location.hash.slice(1));"
             return self._send(f"<html><body><div id=out></div><script>{js}</script></body></html>",
                               headers={"Set-Cookie": f"auth={TOKEN}; Path=/; HttpOnly; SameSite=Lax"})
+        if p == "/waf/search":  # simulated WAF in front of an (unreachable) search: blocks anything unusual
+            if re.search(r"[^A-Za-z0-9 ]", q.get("q", "")):
+                return self._send("<html><head><title>Attention Required! | Cloudflare</title></head><body>"
+                                  "<h1>Sorry, you have been blocked</h1><p>Cloudflare Ray ID: 8a1b2c3d4e5f</p>"
+                                  "</body></html>", 403, headers={"Server": "cloudflare", "CF-RAY": "8a1b2c3d4e5f-AMS"})
+            return self._send(page(f"<h1>{len(q.get('q', ''))} results</h1>"))
+        if p.startswith(("/account", "/safe/account")):
+            safe = p.startswith("/safe/")
+            base = "/safe/account" if safe else "/account"
+            raw_path = self.path.split("?")[0]
+            if raw_path != base and (safe or not re.match(r"^/account(?:/|;|%23|%3f|\.|%00)", raw_path, re.I)):
+                return self._send(page("<h1>Not Found</h1>"), 404)
+            body = page("<h1>My account</h1><p>alice@shop.test - card ending 4242</p>", "Account")
+            if not safe and raw_path.lower().endswith(".css"):
+                if raw_path in CACHE:
+                    return self._send(CACHE[raw_path], headers={"X-Cache": "HIT", "Age": "3"})
+                CACHE[raw_path] = body
+                return self._send(body, headers={"X-Cache": "MISS"})
+            return self._send(body, headers={"Set-Cookie": "acct=1; Path=/; HttpOnly; SameSite=Lax",
+                                             "Cache-Control": "private"})
+        if p in ("/oauth/authorize", "/safe/oauth/authorize"):
+            ru = q.get("redirect_uri", "")
+            ok = ru == "https://shop.test/callback" if p.startswith("/safe/") else ru.startswith("https://shop.test")
+            if not ok:
+                return self._send('{"error": "invalid_request", "error_description": "redirect_uri mismatch"}', 400,
+                                  "application/json")
+            return self._send("", 302, headers={"Location": f"{ru}?code=SplxlOBeZQQYbYS6WxSbIA"})
+        if p in ("/pp", "/safe/pp"):
+            guard = "" if p == "/pp" else "if(keys[i]==='__proto__'||keys[i]==='constructor')return;"
+            return self._send(f"<html><body>pp<script>{PP_PARSER % guard}</script></body></html>")
+        if p in ("/app", "/safe/app"):
+            sink = "innerHTML" if p == "/app" else "textContent"
+            js = ("const params = new URLSearchParams(location.search); const msg = params.get('msg') || '';"
+                  f"document.getElementById('o').{sink} = msg;"
+                  "window.addEventListener('message', function (e) { document.getElementById('o').textContent = e.data; });")
+            libs = '<script src="/static/jquery-1.8.3.min.js"></script><script src="/static/legacy.js"></script>' \
+                if p == "/app" else ""
+            return self._send(f"<html><head>{libs}</head><body><div id=o></div><script>{js}</script></body></html>")
+        if p == "/static/jquery-1.8.3.min.js":
+            return self._send("/*! jQuery v1.8.3 jquery.com | jquery.org/license */ window.jQuery = {};",
+                              ctype="application/javascript")
+        if p == "/static/legacy.js":
+            return self._send(LEGACY_JS, ctype="application/javascript")
+        if p == "/static/legacy.js.map":
+            return self._send(SOURCE_MAP, ctype="application/json")
+        if p == "/static/chunks/admin.chunk.js":
+            return self._send(ADMIN_CHUNK, ctype="application/javascript")
+        if p in ("/internal/export", "/internal/reports"):
+            return self._send('{"rows": []}', ctype="application/json")
         if p == "/static/app.js":
             return self._send(APP_JS, ctype="application/javascript")
         if p == "/api/v1/users":

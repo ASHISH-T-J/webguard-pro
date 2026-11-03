@@ -1,18 +1,33 @@
-"""Async HTTP engine: scope enforcement, global rate limiting, retries, stats.
+"""Async HTTP engine: scope enforcement, adaptive per-host rate control, resilient retries.
 
-Built on httpx with HTTP/1.1 keep-alive connection pooling. All modules share one
-:class:`HttpClient` so concurrency and rate limits are enforced globally.
+Resilience model (per host):
+
+* **Adaptive rate (AIMD)** - each host has its own token bucket. Healthy responses slowly raise the
+  rate (additive increase, up to the configured maximum); 429 / 503 / timeouts halve it
+  (multiplicative decrease). ``Retry-After`` (seconds or HTTP date) is always honoured.
+* **Retries with jittered exponential backoff** for transient failures (connect errors, resets,
+  read timeouts, 502/503/504, 429) - never for 4xx client errors.
+* **Adaptive timeout** - the read timeout follows observed latency (p95-ish EWMA) so slow
+  targets don't produce false "timeouts" and fast ones don't wait 10 s on dead requests.
+* **Circuit breaker** - after repeated consecutive failures a host is paused (cool-down doubles);
+  a half-open probe decides whether to resume; permanently dead hosts fail fast.
+* **Error classification** - DNS / connect / TLS / timeout / reset / protocol errors are counted
+  separately and surfaced in the report, so "no findings" can be told apart from "target was down".
 """
 
 from __future__ import annotations
 
 import asyncio
+import email.utils
 import logging
+import random
 import re
 import shlex
 import time
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -20,6 +35,8 @@ from webguard.config import ScanConfig
 from webguard.scope import Scope
 
 log = logging.getLogger("webguard.http")
+
+RETRY_STATUS = {429, 502, 503, 504}
 
 
 class OutOfScopeError(Exception):
@@ -48,6 +65,90 @@ class TokenBucket:
                 await asyncio.sleep((1 - self.tokens) / self.rate)
 
 
+def classify_error(exc: BaseException) -> str:
+    text = str(exc).lower()
+    if isinstance(exc, httpx.ConnectTimeout):
+        return "connect_timeout"
+    if isinstance(exc, (httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout)):
+        return "read_timeout"
+    if isinstance(exc, httpx.ConnectError):
+        if "name or service" in text or "nodename" in text or "getaddrinfo" in text or "name resolution" in text:
+            return "dns"
+        if "ssl" in text or "certificate" in text or "tls" in text:
+            return "tls"
+        if "refused" in text:
+            return "refused"
+        return "connect"
+    if isinstance(exc, (httpx.RemoteProtocolError, httpx.LocalProtocolError)):
+        return "protocol"
+    if isinstance(exc, httpx.ReadError):
+        return "reset"
+    if isinstance(exc, httpx.DecodingError):
+        return "decoding"
+    return "transport"
+
+
+def parse_retry_after(value: str | None, cap: float = 60.0) -> float | None:
+    if not value:
+        return None
+    value = value.strip()
+    if value.isdigit():
+        return min(float(value), cap)
+    try:
+        when = email.utils.parsedate_to_datetime(value).timestamp()
+        return max(0.0, min(when - time.time(), cap))
+    except (TypeError, ValueError):
+        return None
+
+
+@dataclass
+class HostState:
+    """Adaptive control state for one host."""
+
+    max_rate: float
+    bucket: TokenBucket = None  # type: ignore[assignment]
+    latency_ewma: float = 0.0
+    latency_dev: float = 0.0
+    consecutive_failures: int = 0
+    open_until: float = 0.0
+    cooldown: float = 5.0
+    trips: int = 0
+    dead: bool = False
+    adjustments: list[str] = field(default_factory=list)
+    _half_open: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    def __post_init__(self) -> None:
+        self.bucket = TokenBucket(self.max_rate)
+
+    @property
+    def rate(self) -> float:
+        return self.bucket.rate
+
+    def observe_latency(self, seconds: float) -> None:
+        if self.latency_ewma == 0:
+            self.latency_ewma, self.latency_dev = seconds, seconds / 2
+        else:
+            self.latency_dev = 0.75 * self.latency_dev + 0.25 * abs(seconds - self.latency_ewma)
+            self.latency_ewma = 0.875 * self.latency_ewma + 0.125 * seconds
+
+    def adaptive_timeout(self, base: float) -> float:
+        """TCP-RTO style: mean + 4 x deviation, at least 2x mean, bounded by [base, 6 x base]."""
+        if self.latency_ewma == 0:
+            return base
+        rto = max(self.latency_ewma * 2, self.latency_ewma + 4 * self.latency_dev)
+        return min(max(base, rto), base * 6)
+
+    def increase(self) -> None:
+        if self.bucket.rate < self.max_rate:
+            self.bucket.rate = min(self.max_rate, self.bucket.rate + max(0.2, self.max_rate * 0.02))
+
+    def decrease(self, reason: str, factor: float = 0.5, floor: float = 0.5) -> None:
+        old = self.bucket.rate
+        self.bucket.rate = max(floor, old * factor)
+        if len(self.adjustments) < 50:
+            self.adjustments.append(f"{time.strftime('%H:%M:%S')} {reason}: {old:.1f} -> {self.bucket.rate:.1f} req/s")
+
+
 @dataclass
 class Resp:
     """Lightweight, fully-read response snapshot (safe to keep after the connection closes)."""
@@ -60,6 +161,7 @@ class Resp:
     method: str
     request_body: str | None = None
     history: tuple[str, ...] = ()
+    request_headers: dict[str, str] = field(default_factory=dict)
 
     @property
     def content_type(self) -> str:
@@ -69,9 +171,33 @@ class Resp:
     def is_html(self) -> bool:
         return "html" in self.content_type or (not self.content_type and "<html" in self.text[:500].lower())
 
+    def raw_request(self, limit: int = 3000) -> str:
+        """HTTP/1.1-style request text for evidence."""
+        parts = urlsplit(self.url)
+        target = parts.path or "/"
+        if parts.query:
+            target += "?" + parts.query
+        lines = [f"{self.method} {target} HTTP/1.1", f"Host: {parts.netloc}"]
+        lines += [f"{k}: {v}" for k, v in self.request_headers.items() if k.lower() not in ("host", "accept-encoding")]
+        text = "\r\n".join(lines) + "\r\n\r\n" + (self.request_body or "")
+        return text[:limit]
+
+    def raw_response(self, limit: int = 3000, around: str | None = None) -> str:
+        """Status line, headers and a body excerpt (centred on ``around`` when given)."""
+        head = [f"HTTP/1.1 {self.status}"] + [f"{k}: {v}" for k, v in self.headers.items()]
+        body = self.text
+        if around and around in body:
+            i = body.index(around)
+            start = max(0, i - limit // 3)
+            body = ("…" if start else "") + body[start:start + limit // 2] + "…"
+        else:
+            body = body[: limit // 2] + ("…" if len(body) > limit // 2 else "")
+        return "\r\n".join(head) + "\r\n\r\n" + body
+
 
 _WAF_HINT = re.compile(r"(?i)request (?:was )?(?:blocked|rejected)|web application firewall|access denied|"
-                       r"not acceptable|incident id|support id|ray id|mod_security|security policy")
+                       r"not acceptable|incident id|support id|ray id|mod_security|security policy|"
+                       r"attention required|just a moment|cf-chl")
 
 
 async def _guard_location(response: httpx.Response) -> None:
@@ -97,7 +223,8 @@ class HttpClient:
         self.config = config
         self.scope = scope
         self._sem = asyncio.Semaphore(config.concurrency)
-        self._bucket = TokenBucket(config.rate_limit)
+        self._global = TokenBucket(config.rate_limit)  # hard global ceiling across all hosts
+        self.hosts: dict[str, HostState] = {}
         headers = {"User-Agent": config.user_agent, "Accept": "*/*"}
         headers.update(config.headers)
         kwargs: dict[str, Any] = dict(
@@ -115,8 +242,9 @@ class HttpClient:
             kwargs["proxy"] = config.proxy
         self._client = httpx.AsyncClient(**kwargs)
         self._cache: dict[tuple, Resp] = {}
+        self.errors: Counter[str] = Counter()
         self.stats = {"requests": 0, "errors": 0, "blocked_out_of_scope": 0, "cache_hits": 0, "rate_limited": 0,
-                      "server_errors": 0, "waf_blocks": 0}
+                      "server_errors": 0, "waf_blocks": 0, "retries": 0, "circuit_trips": 0}
 
     async def __aenter__(self) -> HttpClient:
         return self
@@ -127,6 +255,58 @@ class HttpClient:
     async def close(self) -> None:
         await self._client.aclose()
 
+    # ------------------------------------------------------------------ host state
+    def host(self, url: str) -> HostState:
+        netloc = urlsplit(url).netloc
+        st = self.hosts.get(netloc)
+        if st is None:
+            st = self.hosts[netloc] = HostState(max_rate=self.config.rate_limit)
+        return st
+
+    def resilience_report(self) -> dict[str, Any]:
+        return {
+            "errors_by_kind": dict(self.errors),
+            "hosts": {h: {"final_rate": round(s.rate, 2), "latency_ms": round(s.latency_ewma * 1000),
+                          "circuit_trips": s.trips, "dead": s.dead, "rate_adjustments": s.adjustments[-10:]}
+                      for h, s in self.hosts.items()},
+        }
+
+    async def _wait_circuit(self, st: HostState) -> bool:
+        """Returns False if the host is considered dead."""
+        if st.dead:
+            return False
+        now = time.monotonic()
+        if st.open_until > now:
+            async with st._half_open:  # one half-open probe at a time
+                wait = st.open_until - time.monotonic()
+                if wait > 0:
+                    await asyncio.sleep(wait)
+        return not st.dead
+
+    def _record_failure(self, st: HostState, kind: str) -> None:
+        self.errors[kind] += 1
+        st.consecutive_failures += 1
+        if kind in ("read_timeout", "connect_timeout", "reset"):
+            st.decrease(f"{kind}", 0.7)
+        if st.consecutive_failures >= 8:
+            st.trips += 1
+            self.stats["circuit_trips"] += 1
+            st.open_until = time.monotonic() + st.cooldown
+            st.decrease("circuit open", 0.5)
+            log.warning("host unhealthy (%s x%d) - pausing %.0fs", kind, st.consecutive_failures, st.cooldown)
+            st.cooldown = min(st.cooldown * 2, 120)
+            st.consecutive_failures = 4  # half-open: a few more failures re-open quickly
+            if st.trips >= 5 or kind in ("dns", "refused") and st.trips >= 2:
+                st.dead = True
+                log.warning("giving up on unresponsive host")
+
+    def _record_success(self, st: HostState, elapsed: float) -> None:
+        st.consecutive_failures = 0
+        st.cooldown = 5.0
+        st.observe_latency(elapsed)
+        st.increase()
+
+    # ------------------------------------------------------------------ requests
     async def request(
         self,
         method: str,
@@ -180,67 +360,76 @@ class HttpClient:
 
     async def _send_once(self, method: str, url: str, *, params=None, data=None, json=None, content=None,
                          headers=None, timeout: float | None = None) -> Resp | None:
+        st = self.host(url)
         attempt = 0
         while True:
             attempt += 1
-            await self._bucket.acquire()
+            if not await self._wait_circuit(st):
+                self.errors["host_unavailable"] += 1
+                return None
+            await self._global.acquire()
+            await st.bucket.acquire()
+            req_timeout = timeout if timeout is not None else st.adaptive_timeout(self.config.timeout)
             async with self._sem:
                 self.stats["requests"] += 1
                 start = time.perf_counter()
                 try:
                     resp = await self._client.request(
-                        method,
-                        url,
-                        params=params,
-                        data=data,
-                        json=json,
-                        content=content,
-                        headers=headers,
+                        method, url, params=params, data=data, json=json, content=content, headers=headers,
                         follow_redirects=False,
-                        timeout=timeout if timeout is not None else httpx.USE_CLIENT_DEFAULT,
+                        timeout=httpx.Timeout(req_timeout, connect=min(req_timeout, 10.0)),
                     )
                     text = resp.text
                     elapsed = time.perf_counter() - start
-                except (httpx.InvalidURL, httpx.UnsupportedProtocol) as exc:
+                except (httpx.InvalidURL, httpx.UnsupportedProtocol, httpx.LocalProtocolError) as exc:
                     log.debug("unsendable request %s %s: %s", method, url, exc)
+                    self.errors["unsendable"] += 1
                     return None
                 except (httpx.TransportError, httpx.DecodingError) as exc:
                     elapsed = time.perf_counter() - start
                     if isinstance(exc, httpx.TimeoutException) and timeout is not None:
                         # caller asked for an explicit timeout (timing checks) - report it as a slow response
                         return Resp(url, 0, httpx.Headers(), "", elapsed, method.upper())
-                    if attempt <= self.config.retries:
-                        await asyncio.sleep(0.5 * 2 ** (attempt - 1))
+                    kind = classify_error(exc)
+                    self._record_failure(st, kind)
+                    if attempt <= self.config.retries and kind not in ("dns", "tls", "decoding"):
+                        self.stats["retries"] += 1
+                        await asyncio.sleep(_backoff(attempt))
                         continue
                     self.stats["errors"] += 1
-                    log.debug("request failed %s %s: %s", method, url, exc)
+                    log.debug("request failed %s %s: %s (%s)", method, url, kind, exc)
                     return None
-            if resp.status_code == 429:
+
+            code = resp.status_code
+            if code == 429:
                 self.stats["rate_limited"] += 1
-            elif resp.status_code >= 500:
+                st.decrease("HTTP 429")
+            elif code == 503:
                 self.stats["server_errors"] += 1
-            elif resp.status_code in (403, 406, 419, 501) and attempt == 1 and _WAF_HINT.search(text[:3000]):
+                st.decrease("HTTP 503", 0.7)
+            elif code >= 500:
+                self.stats["server_errors"] += 1
+            elif code in (403, 406, 419, 501) and attempt == 1 and _WAF_HINT.search(text[:3000]):
                 self.stats["waf_blocks"] += 1
-            if resp.status_code == 429 and attempt <= self.config.retries:
-                retry_after = resp.headers.get("retry-after", "")
-                await asyncio.sleep(min(float(retry_after), 30.0) if retry_after.isdigit() else 2.0 * attempt)
+            if code in RETRY_STATUS and attempt <= self.config.retries:
+                self.stats["retries"] += 1
+                wait = parse_retry_after(resp.headers.get("retry-after")) or _backoff(attempt, base=1.0)
+                await asyncio.sleep(wait)
                 continue
+            if code < 500 and code != 429:
+                self._record_success(st, elapsed)
             try:
                 body = resp.request.content.decode(errors="replace")[:4000] if resp.request.content else None
             except httpx.RequestNotRead:
                 body = None
-            headers = resp.headers
-            if "x-webguard-location" in headers:
-                headers = httpx.Headers(headers)
-                headers["location"] = headers.pop("x-webguard-location")
+            rheaders = resp.headers
+            if "x-webguard-location" in rheaders:
+                rheaders = httpx.Headers(rheaders)
+                rheaders["location"] = rheaders.pop("x-webguard-location")
             return Resp(
-                url=str(resp.url),
-                status=resp.status_code,
-                headers=headers,
-                text=text,
-                elapsed=elapsed,
-                method=method.upper(),
-                request_body=body,
+                url=str(resp.url), status=code, headers=rheaders, text=text, elapsed=elapsed,
+                method=method.upper(), request_body=body,
+                request_headers={k: v for k, v in resp.request.headers.items()},
             )
 
     async def get(self, url: str, **kw: Any) -> Resp | None:
@@ -265,12 +454,19 @@ class HttpClient:
             cmd += ["-H", f"{name}: {value}"]
         if req.content:
             ctype = req.headers.get("content-type")
-            if ctype:
+            if ctype and not any(k.lower() == "content-type" for k in (headers or {})):
                 cmd += ["-H", f"Content-Type: {ctype}"]
             cmd += ["--data-raw", req.content.decode(errors="replace")]
         return " ".join(shlex.quote(c) for c in cmd)
 
     def slow_down(self, factor: float = 0.5, minimum: float = 1.0) -> float:
-        """Reduce the request rate (called by the agent when it observes 429s / WAF blocks)."""
-        self._bucket.rate = max(minimum, self._bucket.rate * factor)
-        return self._bucket.rate
+        """Reduce the request rate for every host (agent reaction to 429s / WAF blocks)."""
+        for st in self.hosts.values():
+            st.decrease("agent slow-down", factor, minimum)
+        self._global.rate = max(minimum, self._global.rate * factor)
+        return self._global.rate
+
+
+def _backoff(attempt: int, base: float = 0.5, cap: float = 30.0) -> float:
+    """Exponential backoff with full jitter."""
+    return random.uniform(0, min(cap, base * 2 ** attempt))

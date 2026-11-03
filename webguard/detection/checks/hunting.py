@@ -30,7 +30,7 @@ async def anomaly_fuzz(ctx: Context, point: InjectionPoint) -> None:
     for name, payload in anomaly.PROBES:
         value = point.original + payload
         r = await ctx.send(point, value)
-        if r is not None:
+        if r is not None and ctx.app_answered(r, point, "anomaly"):  # blocked probes are not app behaviour
             probe_vecs.append((name, value, features(r, base.primary, [value])))
             statuses[name] = r.status
     results = anomaly.score(benign_vecs, probe_vecs)

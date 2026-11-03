@@ -47,9 +47,12 @@ async def open_redirect(ctx: Context, point: InjectionPoint) -> None:
             if not where and m2:
                 where = f"JavaScript redirect: {m2.group(0)}"
         if where:
+            oauth = bool(re.search(r"(?i)oauth|authori[sz]e|/connect/|openid", point.url)) or \
+                point.name.lower() == "redirect_uri"
             ctx.report(Finding(
-                check="redirect", title="Open redirect",
-                severity=Severity.MEDIUM, confidence=Confidence.CERTAIN,
+                check="redirect",
+                title="OAuth redirect_uri validation bypass" if oauth else "Open redirect",
+                severity=Severity.HIGH if oauth else Severity.MEDIUM, confidence=Confidence.CERTAIN,
                 url=point.url, method=point.method, parameter=point.name, location=point.location,
                 payload=payload, evidence=f"Redirects to attacker-controlled host: {where}",
                 description="The application redirects users to arbitrary external URLs. This is used for "
@@ -58,7 +61,7 @@ async def open_redirect(ctx: Context, point: InjectionPoint) -> None:
                             "parsed host, not a string prefix.",
                 cwe="CWE-601", owasp="A01:2021-Broken Access Control", detection=SIGNATURE,
                 references=["https://cheatsheetseries.owasp.org/cheatsheets/Unvalidated_Redirects_and_Forwards_Cheat_Sheet.html"],
-                tags=["redirect"], request=ctx.curl(point, payload),
+                tags=["redirect"] + (["oauth", "token-theft"] if oauth else []), request=ctx.curl(point, payload),
             ))
             return
 

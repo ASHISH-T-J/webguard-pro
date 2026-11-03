@@ -90,6 +90,8 @@ def write_html(report: dict[str, Any], path: Path) -> Path:
                 ("Classification", _e(" · ".join(x for x in [f.get("cwe"), f.get("owasp")] if x))),
                 ("Detection", _e(f"{f.get('detection')} · ML true-positive score {f.get('ml_score')}")),
                 ("Reproduce", f"<pre>{_e(f.get('request'))}</pre>" if f.get("request") else ""),
+                ("Context", _context_html(f.get("context") or {})),
+                ("HTTP evidence", _http_html(f.get("context") or {})),
             ] if v and v not in ("<code></code>", "<code>None</code>")
         )
         rows.append(
@@ -125,7 +127,7 @@ h1{{margin:.2em 0}} .muted{{color:var(--muted)}}
 dl{{display:grid;grid-template-columns:160px 1fr;gap:4px 12px}} dt{{color:var(--muted)}} dd{{margin:0;word-break:break-word}}
 pre,code{{white-space:pre-wrap;word-break:break-all;font-size:12px}}
 table{{border-collapse:collapse;width:100%}} td,th{{border-bottom:1px solid var(--line);padding:4px;text-align:left;font-size:13px}}
-input{{padding:6px;width:100%;max-width:320px;margin:8px 0}}
+input#q{{padding:6px;width:100%;max-width:320px;margin:8px 0}} .bar{{display:flex;flex-wrap:wrap;gap:10px;align-items:center}}
 @media (max-width:600px){{dl{{grid-template-columns:1fr}}}}
 </style></head><body>
 <h1>WebGuard security report</h1>
@@ -133,12 +135,63 @@ input{{padding:6px;width:100%;max-width:320px;margin:8px 0}}
 <div class="cards">{summary}</div>
 {"<h2>Hosts</h2><table><tr><th>URL</th><th>Status</th><th>Title</th><th>Technologies</th><th>WAF</th></tr>" + host_rows + "</table>" if host_rows else ""}
 {_assessment_sections(meta)}
+{_conditions_html(meta)}
 <h2>Findings ({len(report['findings'])})</h2>
-<input id="q" placeholder="Filter findings…" oninput="for(const d of document.querySelectorAll('.f'))d.style.display=d.textContent.toLowerCase().includes(this.value.toLowerCase())?'':'none'">
+<div class="bar"><input id="q" placeholder="Filter findings…" oninput="filt()">
+{''.join(f'<label><input type="checkbox" class="sv" value="{k}" checked onchange="filt()"> {k}</label>' for k in report['summary'])}
+<label><input type="checkbox" id="vo" onchange="filt()"> verified only</label></div>
+<script>function filt(){{const q=document.getElementById('q').value.toLowerCase();const on=new Set([...document.querySelectorAll('.sv:checked')].map(c=>c.value));const vo=document.getElementById('vo').checked;for(const d of document.querySelectorAll('.f')){{const t=d.textContent.toLowerCase();d.style.display=(t.includes(q)&&on.has(d.dataset.sev)&&(!vo||t.includes('verified by independent')||t.includes('deterministic')))?'':'none'}}}}</script>
 {''.join(rows) or '<p>No findings.</p>'}
 </body></html>"""
     path.write_text(doc)
     return path
+
+
+def _context_html(ctx: dict[str, Any]) -> str:
+    keys = [("environment", "Environment"), ("page_type", "Page type"), ("waf", "WAF in front"),
+            ("verification", "Verification"), ("environment_note", "Note"), ("review_notes", "Review before reporting")]
+    items = []
+    for k, label in keys:
+        v = ctx.get(k)
+        if v:
+            items.append(f"<b>{_e(label)}:</b> {_e(', '.join(v) if isinstance(v, list) else v)}")
+    return "<br>".join(items)
+
+
+def _http_html(ctx: dict[str, Any]) -> str:
+    if not ctx.get("http_request"):
+        return ""
+    return (f"<details><summary>request / response</summary><pre>{_e(ctx['http_request'])}</pre>"
+            f"<pre>{_e(ctx.get('http_response', ''))}</pre></details>")
+
+
+def _conditions_html(meta: dict[str, Any]) -> str:
+    """Test conditions: environment, defences encountered, untested inputs, network resilience."""
+    if not meta.get("environment") and not meta.get("resilience"):
+        return ""
+    parts = [f"<p><b>Environment:</b> {_e(meta.get('environment', 'unknown'))} · <b>Reasoner:</b> "
+             f"{_e(meta.get('reasoner', 'local'))}</p>"]
+    wafs = sorted({w for h in meta.get("hosts", []) for w in h.get("waf", [])})
+    if wafs:
+        parts.append(f"<p><b>Defences detected:</b> {_e(', '.join(wafs))}. Responses produced by these defences were "
+                     "never used as evidence.</p>")
+    obstructed = meta.get("obstructed_inputs") or {}
+    if obstructed:
+        rows = "".join(f"<tr><td>{_e(k.replace('_', ' '))}</td><td>{len(v)}</td><td>{_e('; '.join(v[:8]))}</td></tr>"
+                       for k, v in obstructed.items())
+        parts.append("<p><b>Not tested</b> (answered by a WAF/challenge/rate limiter instead of the application):</p>"
+                     f"<table><tr><th>Obstruction</th><th>Tests</th><th>Examples</th></tr>{rows}</table>")
+    res = meta.get("resilience") or {}
+    if res.get("errors_by_kind") or any(h.get("rate_adjustments") for h in res.get("hosts", {}).values()):
+        errs = ", ".join(f"{k}: {v}" for k, v in (res.get("errors_by_kind") or {}).items()) or "none"
+        adj = "".join(f"<li>{_e(h)}: {_e('; '.join(d['rate_adjustments']))} (final {d['final_rate']} req/s, "
+                      f"{d['latency_ms']} ms avg, circuit trips {d['circuit_trips']})</li>"
+                      for h, d in res.get("hosts", {}).items() if d.get("rate_adjustments"))
+        parts.append(f"<p><b>Network errors:</b> {_e(errs)}</p>" + (f"<p><b>Adaptive rate control:</b></p><ul>{adj}</ul>" if adj else ""))
+    facts = [x for x in meta.get("facts", []) if x.startswith(("JS analysis", "Environment", "Content discovery"))]
+    if facts:
+        parts.append("<ul>" + "".join(f"<li>{_e(x)}</li>" for x in facts) + "</ul>")
+    return "<h2>Test conditions</h2>" + "".join(parts)
 
 
 def _assessment_sections(meta: dict[str, Any]) -> str:
@@ -208,6 +261,7 @@ def finding_markdown(f: Finding) -> str:
 {chr(10).join(steps)}
 
 **Payload:** `{f.payload or 'n/a'}`
+{_md_evidence(f)}
 
 ### Impact
 
@@ -219,6 +273,19 @@ def finding_markdown(f: Finding) -> str:
 
 {('### References' + chr(10) + chr(10) + refs) if refs else ''}
 """
+
+
+def _md_evidence(f: Finding) -> str:
+    ctx = f.context or {}
+    out = ""
+    if ctx.get("http_request"):
+        out += f"\n**HTTP request**\n\n```http\n{ctx['http_request']}\n```\n"
+        out += f"\n**HTTP response (excerpt)**\n\n```http\n{ctx.get('http_response', '')[:2500]}\n```\n"
+    notes = [ctx.get("verification"), ctx.get("environment_note")] + list(ctx.get("review_notes") or [])
+    notes = [n for n in notes if n]
+    if notes:
+        out += "\n> " + "  \n> ".join(notes) + "\n"
+    return out
 
 
 def _impact(f: Finding) -> str:

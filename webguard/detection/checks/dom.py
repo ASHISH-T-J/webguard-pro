@@ -57,7 +57,7 @@ PAYLOADS = [
 
 
 def candidates(pages: dict, spa_routes: list[str], root: str, skip: set[tuple[str, str]] = frozenset(),
-               limit: int = 60) -> list[tuple[str, str]]:
+               limit: int = 60, extra_params: list[tuple[str, str]] = ()) -> list[tuple[str, str]]:
     """(url-template-with-{p}, description) pairs worth testing in a browser.
 
     DOM XSS needs client-side code, so only pages that run script are tested; parameters with an
@@ -71,6 +71,12 @@ def candidates(pages: dict, spa_routes: list[str], root: str, skip: set[tuple[st
             continue
         for p in ROUTE_PARAMS[:2]:
             out.append((f"{root}/#/{route.strip('/')}?{p}={{p}}", f"SPA route #/{route} param {p}"))
+    # parameters the front-end code reads (found by static JS analysis) - test them on the app shell
+    for name, page in list(extra_params)[:15]:
+        base = (page or root + "/").split("?")[0]
+        out.insert(0, (f"{base}?{name}={{p}}", f"client-read param {name}"))
+        if spa_routes and not page:
+            out.insert(1, (f"{root}/#/?{name}={{p}}", f"client-read param {name} (hash)"))
     for url, resp in pages.items():
         if not getattr(resp, "is_html", False) or "<script" not in resp.text.lower():
             continue
@@ -159,5 +165,60 @@ async def dom_xss(ctx: Context, targets: list[tuple[str, str]], concurrency: int
 
         for i in range(0, len(targets), concurrency):  # ordered batches so the most likely routes report first
             await asyncio.gather(*(test(t, d) for t, d in targets[i:i + concurrency]))
+        await context.close()
+        await browser.close()
+
+
+PP_VECTORS = ["?__proto__[{k}]=wgpp", "?__proto__.{k}=wgpp", "?constructor[prototype][{k}]=wgpp",
+              "#__proto__[{k}]=wgpp", "#constructor[prototype][{k}]=wgpp"]
+
+
+async def prototype_pollution(ctx: Context, pages: list[str], timeout_ms: int = 8000) -> None:
+    """Client-side prototype pollution via URL: does a crafted query/hash set Object.prototype.<key>?"""
+    if not HAVE_PLAYWRIGHT or not pages:
+        return
+    async with async_playwright() as pw:
+        browser = await launch_browser(pw)
+        if browser is None:
+            return
+        context = await browser.new_context(ignore_https_errors=True, user_agent=ctx.config.user_agent)
+
+        async def guard(route):
+            if route.request.url.startswith(("data:", "blob:", "about:")) or ctx.client.scope.in_scope(route.request.url):
+                await route.continue_()
+            else:
+                await route.abort()
+
+        await context.route("**/*", guard)
+        for base in pages[:8]:
+            for vec in PP_VECTORS:
+                key = "wg" + token(6)
+                url = base.split("#")[0].split("?")[0] + vec.format(k=key)
+                page = await context.new_page()
+                try:
+                    ctx.client.stats["requests"] += 1
+                    await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                    await page.wait_for_timeout(800)
+                    polluted = await page.evaluate(f"() => ({{}})['{key}'] === 'wgpp'")
+                except Exception:
+                    polluted = False
+                finally:
+                    await page.close()
+                if polluted:
+                    ctx.report(Finding(
+                        check="prototype_pollution", title="Client-side prototype pollution via URL",
+                        severity=Severity.MEDIUM, confidence=Confidence.CERTAIN, url=base.split("?")[0],
+                        location="dom", payload=vec.format(k=key),
+                        evidence=f"After loading {url}, Object.prototype.{key} === 'wgpp' in the page.",
+                        description="A URL/hash parser merges keys like __proto__ into objects, polluting every object "
+                                    "in the page. Combined with a script gadget this usually becomes DOM XSS.",
+                        remediation="Use a parser that ignores __proto__/constructor keys (or Object.create(null) "
+                                    "targets); freeze Object.prototype where possible; update vulnerable libraries.",
+                        cwe="CWE-1321", owasp="A03:2021-Injection", detection=SIGNATURE,
+                        references=["https://portswigger.net/web-security/prototype-pollution/client-side"],
+                        tags=["prototype-pollution", "dom", "browser-verified"],
+                        request="open in browser: " + url,
+                    ))
+                    break
         await context.close()
         await browser.close()

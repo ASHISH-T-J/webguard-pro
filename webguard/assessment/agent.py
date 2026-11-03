@@ -41,7 +41,7 @@ from webguard.http import HttpClient, Resp
 from webguard.ml.triage import TriageModel
 from webguard.models import Confidence, Finding, Host, InjectionPoint
 from webguard.nlp.models import PageInfo, classify_page, classify_param, hypotheses_for_param
-from webguard.recon import openapi
+from webguard.recon import js_analysis, openapi
 from webguard.recon.active import probe
 from webguard.scope import Scope
 from webguard.signatures import SignatureDB, default_db
@@ -53,6 +53,8 @@ SKIP_PARAMS = re.compile(
     r"__eventtarget|__eventargument|_wpnonce|nonce|captcha.*|g-recaptcha-response|submit|utm_\w+|fbclid|gclid)$"
 )
 PRIVILEGED = re.compile(r"(?i)/(?:admin|administrator|manage|management|internal|console|dashboard)(?:/|$)")
+SKIP_STATIC = re.compile(r"(?i)\.(?:js|css|png|jpe?g|gif|svg|ico|woff2?|map|txt|xml)(?:$|\?)")
+JWT_LIKE = re.compile(r"^eyJ[\w-]+\.")
 API_HINT = re.compile(r"(?i)/(?:api|v\d+|graphql|rest|ajax|json)(?:/|$)|\.json(?:$|\?)")
 # technology -> bug classes worth prioritising (tester intuition)
 TECH_PRIORS = {
@@ -106,6 +108,9 @@ class AssessmentResult:
     narrative: dict = field(default_factory=dict)
     grep_highlights: list[dict] = field(default_factory=list)
     reasoner: str = "local"
+    environment: str = "production"
+    obstructed: dict[str, list[str]] = field(default_factory=dict)
+    resilience: dict = field(default_factory=dict)
 
     def meta(self) -> dict:
         """Serializable assessment context for reports."""
@@ -119,7 +124,8 @@ class AssessmentResult:
                         "cvss": i.cvss, "cvss_vector": i.cvss_vector, "locations": i.locations[:20]}
                        for i in self.issues],
             "page_types": dict(Counter(p.label for p in self.page_types.values())),
-            "reasoner": self.reasoner,
+            "reasoner": self.reasoner, "environment": self.environment,
+            "obstructed_inputs": self.obstructed, "resilience": self.resilience,
         }
 
 
@@ -177,6 +183,7 @@ class AssessmentAgent:
         self._done: set[str] = set()
         self._auth_required: set[str] = set()
         self._recon_used = 0
+        self._client_params: dict[str, set[str]] = {}
         self._seen_status: dict[str, int] = {}
         self._t0 = time.time()
         async with HttpClient(self.config, self.scope, self.transport) as client:
@@ -191,6 +198,8 @@ class AssessmentAgent:
             finally:
                 self.res.oob = self.ctx.oob_log
                 self.res.stats.update(client.stats)
+                self.res.resilience = client.resilience_report()
+                self.res.obstructed = {k: sorted(v)[:50] for k, v in self.ctx.obstructed.items()}
         self._analyse()
         self.res.narrative = await self.reasoner.narrate(target, self.res.findings, self.res.chains, self.res.coverage)
         self.res.stats["duration_s"] = round(time.time() - self.res.started, 1)
@@ -270,6 +279,11 @@ class AssessmentAgent:
             self._trace("recon", "Start by confirming the target is reachable and fingerprinting it.",
                         ["fingerprint"], "No live HTTP service found - nothing further to test.")
             return
+        from webguard.analysis.context import environment
+
+        self.res.environment = environment(urlsplit(hosts[0].url).hostname or "", "")
+        self.res.facts.append(f"Environment: {self.res.environment} (from hostname); "
+                              f"profile rate {cfg.rate_limit:g} req/s, timing checks {'on' if cfg.timing_checks else 'off'}")
         for h in hosts:
             self.res.facts.append(f"Live: {h.url} [{h.status}] title='{h.title}' tech={', '.join(h.technologies) or '?'}"
                                   + (f" WAF={', '.join(h.waf)}" if h.waf else ""))
@@ -299,6 +313,7 @@ class AssessmentAgent:
             if not SKIP_PARAMS.match(p.name):
                 uniq.setdefault(p.key, p)
         self.res.points = list(uniq.values())
+        self.res.points += self._header_points(crawl, hosts)
         # status observed for each bare URL during mapping (used to prefer reachable inputs)
         self._seen_status: dict[str, int] = {}
         for u, r in crawl.pages.items():
@@ -317,6 +332,11 @@ class AssessmentAgent:
         self.res.facts.append("Parameter semantics: " + ", ".join(f"{k}={v}" for k, v in param_kinds.most_common()))
         if logins:
             self.res.facts.append(f"Login pages: {', '.join(logins[:5])}")
+
+        # advanced JS analysis: source maps, lazy chunks, DOM flows, client-read params, vulnerable libraries
+        self._client_params: dict[str, set[str]] = {}
+        if cfg.enabled("js_analysis"):
+            await self._js_analysis(crawl)
 
         # grep the corpus for leads (DOM sinks, infra, debug flags)
         corpus = [{"url": u, "body": r.text, "content_type": r.content_type, "headers": dict(r.headers)}
@@ -338,6 +358,74 @@ class AssessmentAgent:
         note = self._adapt()
         if note:
             self.res.facts.append(note)
+
+    async def _js_analysis(self, crawl: CrawlResult) -> None:
+        js = {u: crawl.pages[u] for u in crawl.js_files if u in crawl.pages and crawl.pages[u].status == 200}
+        inline: dict[str, str] = {}
+        for u, r in crawl.pages.items():
+            if r.is_html:
+                for i, m in enumerate(re.finditer(r"<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)</script>", r.text[:500000], re.I)):
+                    if len(m.group(1)) > 30:
+                        inline[f"{u}#inline-{i}"] = m.group(1)
+        rep = await js_analysis.analyze(self.ctx, js, inline)
+        js_analysis.report_findings(self.ctx, rep)
+        for name, code in inline.items():  # original sources from source maps: secrets too
+            if ".map#" in name and self.config.enabled("secrets"):
+                passive.secrets(self.ctx, Resp(name, 200, httpx.Headers({"content-type": "application/javascript"}),
+                                               code, 0.0, "GET"))
+        known = {p.key for p in self.res.points}
+        for url in sorted(rep.endpoints):
+            crawl.js_endpoints.add(url)
+            parts = urlsplit(url)
+            if parts.query:
+                params = dict(parse_qsl(parts.query, keep_blank_values=True))
+                bare = urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+                for name in params:
+                    p = InjectionPoint(bare, "GET", "query", name, dict(params), source="js-analysis")
+                    if p.key not in known and not SKIP_PARAMS.match(name):
+                        known.add(p.key)
+                        self.res.points.append(p)
+        self._client_params = {n: pages for n, pages in rep.client_params.items() if not SKIP_PARAMS.match(n)}
+        self.res.facts.append(
+            f"JS analysis: {len(js) + len(rep.extra_js)} files ({len(rep.extra_js)} lazy chunks), "
+            f"{len(rep.source_maps)} source map(s), {len(rep.endpoints)} new endpoint(s), "
+            f"{len(rep.flows)} DOM flow/postMessage lead(s), libraries: {', '.join(sorted(rep.libraries)) or 'none'}, "
+            f"client-read params: {', '.join(sorted(self._client_params)[:15]) or 'none'}")
+
+    def _header_points(self, crawl: CrawlResult, hosts: list[Host]) -> list[InjectionPoint]:
+        """Request headers and cookies as injection points (logged/rendered header values are a classic
+        source of SQLi/XSS in writeups). Tested on a focused sample of endpoints, not on every URL."""
+        cfg = self.config
+        ua_marker = cfg.user_agent.split("(")[0].strip()[-20:]
+        scored: list[tuple[int, str]] = []
+        for u, r in crawl.pages.items():
+            if r.status != 200 or not (r.is_html or "json" in r.content_type) or SKIP_STATIC.search(u):
+                continue
+            score = 0
+            if ua_marker and ua_marker in r.text:
+                score += 5  # the page reflects our User-Agent
+            if r.headers.get_list("set-cookie"):
+                score += 2
+            if re.search(r"(?i)track|log|stat|visit|analytic|audit|history|welcome|referr?er", urlsplit(u).path):
+                score += 3
+            scored.append((score, u))
+        roots = [h.url + "/" for h in hosts]
+        picked = list(dict.fromkeys(roots + [u.split("?")[0] for s, u in sorted(scored, key=lambda t: (-t[0], t[1]))]))[:8]
+        cookies: dict[str, str] = {}
+        for r in crawl.pages.values():
+            for raw in r.headers.get_list("set-cookie"):
+                name, _, rest = raw.partition("=")
+                value = rest.split(";", 1)[0]
+                if name and not JWT_LIKE.match(value) and len(cookies) < 6:
+                    cookies.setdefault(name.strip(), value)
+        out = []
+        for u in picked:
+            root = "{0.scheme}://{0.netloc}/".format(urlsplit(u))
+            for name, orig in (("User-Agent", cfg.user_agent), ("Referer", root), ("X-Forwarded-For", "203.0.113.10")):
+                out.append(InjectionPoint(u, "GET", "header", name, {name: orig}, source="header"))
+            for name, value in cookies.items():
+                out.append(InjectionPoint(u, "GET", "cookie", name, {name: value}, source="cookie"))
+        return out
 
     # ------------------------------------------------------------------ candidate generation
     def _tech_mult(self, check: str) -> float:
@@ -407,6 +495,8 @@ class AssessmentAgent:
                     prior *= 1.15  # documented/confirmed inputs the UI doesn't expose: less tested by others
                 elif p.source == "js-write":
                     prior *= 0.6  # body field names are guessed from the endpoint name - lower likelihood
+                if p.location in ("header", "cookie"):
+                    prior *= 0.6  # less common than parameter injection; tested after the main inputs
                 status = self._seen_status.get(p.url)
                 if status is not None:  # evidence beats guesses: reachable inputs first, auth-gated last
                     prior *= 1.25 if status < 300 else 0.3 if status in (401, 403) else 1.0
@@ -438,6 +528,17 @@ class AssessmentAgent:
             for u, r in pages.items():
                 if "json" in r.content_type and advanced.ID_SEGMENT.search(urlsplit(u).path):
                     add("idor", u, "JSON object addressed by sequential id - neighbour ids may leak other users' data", 6, 2, "idor")
+            authenticated = bool(cfg.headers or cfg.cookies)
+            if cfg.enabled("cache_deception"):
+                personal = [u for u, r in pages.items() if r.status == 200 and r.is_html and not SKIP_STATIC.search(u)
+                            and (authenticated or r.headers.get_list("set-cookie")
+                                 or re.search(r"(?i)account|profile|settings|dashboard|my|user|order", urlsplit(u).path))]
+                for u in sorted(personal, key=lambda u: (urlsplit(u).query != "", len(u)))[:6]:
+                    add("cache_deception", u.split("#")[0], "dynamic page - does a static-looking suffix get it "
+                        "cached (web cache deception)?", 6 if authenticated else 3, 12, "cache_deception")
+            if cfg.enabled("prototype_pollution") and cfg.browser and dom.HAVE_PLAYWRIGHT:
+                add("prototype_pollution", "browser", "URL/hash parsers merging __proto__ keys (client-side prototype "
+                    "pollution, verified in headless Chromium)", 4.5 * self._tech_mult("dom_xss"), 20)
             if cfg.enabled("dom_xss") and cfg.browser and dom.HAVE_PLAYWRIGHT:
                 sink_boost = 1.5 if self._dom_sinks else 1.0
                 add("dom_xss", "browser", f"verify DOM XSS in headless Chromium ({len(self._crawl.spa_routes)} SPA routes, "
@@ -573,7 +674,9 @@ class AssessmentAgent:
                 self._auth_required.add(f"{p.method} {urlsplit(p.url).path}")
                 return
             hyps = self._ordered_hypotheses(p)
-            thorough = self._budget_left() > 0.3
+            if p.location in ("header", "cookie"):  # header values: logged (SQLi/cmd) or rendered (XSS/SSTI)
+                hyps = [c for c in ("sqli", "xss", "ssti", "cmdi") if cfg.enabled(c)]
+            thorough = self._budget_left() > 0.3 and p.location not in ("header", "cookie")
             order = hyps + ([x for x in POINT_CHECKS if x not in hyps and cfg.enabled(x)] if thorough else [])
             for check in order:
                 if self._budget_left() <= 0:
@@ -600,9 +703,20 @@ class AssessmentAgent:
         elif a == "dom_xss":
             root = sorted({h.url for h in self.res.hosts})[0]
             confirmed = {(f.url, f.parameter) for f in ctx.findings.values() if f.check == "xss"}
-            targets = dom.candidates(self.res.pages, sorted(self._crawl.spa_routes), root, confirmed)
+            targets = dom.candidates(self.res.pages, sorted(self._crawl.spa_routes), root, confirmed,
+                                     extra_params=sorted((n, pg) for n, pages in self._client_params.items()
+                                                         for pg in pages))
             await dom.dom_xss(ctx, targets)
             self._cover("dom_xss")
+        elif a == "cache_deception":
+            await advanced.cache_deception(ctx, t, self.res.pages.get(t) or await self.client.safe_get(t),
+                                           authenticated=bool(cfg.headers or cfg.cookies))
+            self._cover("cache_deception")
+        elif a == "prototype_pollution":
+            script_pages = [u for u, r in self.res.pages.items() if r.is_html and "<script" in r.text.lower()]
+            roots = [h.url + "/" for h in self.res.hosts]
+            await dom.prototype_pollution(ctx, list(dict.fromkeys(roots + sorted(script_pages)))[:8])
+            self._cover("prototype_pollution")
         elif a == "verify":
             await self._verify(t)
 
@@ -658,6 +772,12 @@ class AssessmentAgent:
         if any(g.check == f.check for g in fresh.findings.values()):
             if "verified" not in f.tags:
                 f.tags.append("verified")
+            if f.payload:  # attach the exact HTTP exchange as report evidence
+                r = await self.ctx.send(p, f.payload)
+                if r is not None:
+                    marker = f.payload if f.payload in r.text else None
+                    f.context["http_request"] = r.raw_request()
+                    f.context["http_response"] = r.raw_response(around=marker)
         else:
             f.tags.append("not-reproduced")
             f.confidence = Confidence.TENTATIVE
@@ -665,6 +785,9 @@ class AssessmentAgent:
 
     # ------------------------------------------------------------------ analysis
     def _analyse(self) -> None:
+        for kind, items in self.ctx.obstructed.items():
+            self.res.facts.append(f"{len(items)} test(s) were answered by a {kind.replace('_', ' ')} instead of the "
+                                  "application - those inputs are NOT TESTED (not 'not vulnerable').")
         if self._auth_required:
             self.res.facts.append(
                 f"{len(self._auth_required)} endpoint(s) answered 401/403 and were not fuzzed without a session - "
@@ -676,6 +799,21 @@ class AssessmentAgent:
             if "not-reproduced" in f.tags:
                 f.ml_score = round(f.ml_score * 0.5, 3)
         self.res.findings = findings
+        waf = sorted({w for h in self.res.hosts for w in h.waf})
+        for f in findings:
+            pt = self.res.page_types.get(f.url)
+            f.context.update({
+                "environment": self.res.environment,
+                "page_type": pt.label if pt else None,
+                "waf": waf or None,
+                "verification": ("verified by independent re-test" if "verified" in f.tags else
+                                 "NOT reproduced on re-test" if "not-reproduced" in f.tags else
+                                 "deterministic evidence (not re-tested)"),
+                "review_notes": correlate.false_positive_signals(f) or None,
+            })
+            if self.res.environment != "production":
+                f.context["environment_note"] = (f"Target looks like a {self.res.environment} environment - confirm the "
+                                                 "issue also exists in production before rating business impact.")
         self.res.issues = correlate.cluster(findings)
         self.res.chains = correlate.attack_chains(findings)
         vuln = sum(1 for v in self.res.coverage.values() if v == "vulnerable")

@@ -37,6 +37,8 @@ class Context:
         self.on_finding = on_finding
         self.findings: dict[str, Finding] = {}
         self.oob_log: list[dict[str, str]] = []
+        # inputs where a WAF / CDN challenge / rate limiter answered instead of the application
+        self.obstructed: dict[str, set[str]] = {}
         self._baselines: dict[tuple, Baseline | None] = {}
         self._baseline_locks: dict[tuple, asyncio.Lock] = {}
 
@@ -59,6 +61,22 @@ class Context:
                 return True
             if url is not None and f.url == url:
                 return True
+        return False
+
+    # ------------------------------------------------------------------ response context
+    def app_answered(self, resp, point: InjectionPoint | None = None, check: str = "") -> bool:
+        """True if the application (not a WAF/CDN challenge/rate limiter) produced this response.
+
+        Non-application responses are never used as evidence; the input is recorded as obstructed so the
+        report can say "not tested" instead of implying "not vulnerable".
+        """
+        from webguard.analysis.context import classify
+
+        rc = classify(resp)
+        if rc.is_app_response:
+            return True
+        if point is not None:
+            self.obstructed.setdefault(rc.kind, set()).add(f"{point.method} {point.url} [{point.name}] {check}".strip())
         return False
 
     # ------------------------------------------------------------------ requests
@@ -117,11 +135,14 @@ class Context:
 
         Returns (confirmed, evidence) where evidence has measured timings.
         """
-        d = self.config.time_delay
+        # jitter-aware: on noisy networks the injected delay must clearly exceed natural variation
+        jitter = max(base.std_time, base.max_time - base.mean_time)
+        d = max(self.config.time_delay, min(30, int(jitter * 6) + 1))
         threshold = base.max_time + d * 0.8
         fast_limit = base.max_time + d * 0.5
         req_timeout = self.config.timeout + d + 2
-        evidence: dict[str, float] = {"baseline_max": round(base.max_time, 3), "delay": float(d)}
+        evidence: dict[str, float] = {"baseline_max": round(base.max_time, 3), "delay": float(d),
+                                      "baseline_jitter": round(jitter, 3)}
         r1 = await self.send(point, make_payload(d), timeout=req_timeout)
         if r1 is None or r1.elapsed < threshold:
             return False, evidence

@@ -107,6 +107,8 @@ async def nosqli(ctx: Context, point: InjectionPoint) -> None:
         return
     if not (r_ne and r_eq and r_plain):
         return
+    if not all(ctx.app_answered(r, point, "nosqli") for r in (r_ne, r_eq, r_plain)):
+        return
     for r in (r_ne, r_eq, r_regex):
         if r is not None and NOSQL_ERRORS.search(r.text):
             m = NOSQL_ERRORS.search(r.text)
@@ -295,7 +297,7 @@ async def forbidden_bypass(ctx: Context, url: str, blocked: Resp) -> None:
             r = await ctx.client.request("GET", vurl, headers=headers or None)
         except Exception:
             continue
-        if r is None or r.status != 200 or len(r.text) < 50:
+        if r is None or r.status != 200 or len(r.text) < 50 or not ctx.app_answered(r):
             continue
         if similarity(r.text, blocked.text) > 0.8:
             continue
@@ -410,3 +412,66 @@ async def graphql(ctx: Context, url: str) -> None:
             remediation="Limit batch size and apply rate limiting per operation, not per HTTP request.",
             cwe="CWE-799", detection=SIGNATURE, tags=["graphql", "rate-limit"],
         ))
+
+# ------------------------------------------------------------------------------ web cache deception
+
+CACHE_HIT = re.compile(r"(?i)\bhit\b")
+WCD_SUFFIXES = [  # path-confusion forms from "Gotta cache 'em all" (PortSwigger, 2024)
+    ("/{r}.css", "extra path segment"),
+    (";{r}.css", "';' delimiter (Java/Spring matrix params)"),
+    ("%23{r}.css", "encoded '#' delimiter"),
+    ("%3f{r}.css", "encoded '?' delimiter"),
+    (".{r}.css", "'.' extension confusion"),
+    ("%00{r}.css", "encoded NUL delimiter"),
+]
+
+
+def _cached(resp: Resp) -> bool:
+    h = {k.lower(): v for k, v in resp.headers.items()}
+    if any(CACHE_HIT.search(h.get(k, "")) for k in ("x-cache", "cf-cache-status", "x-cache-status", "x-proxy-cache",
+                                                     "akamai-cache-status", "cdn-cache")):
+        return True
+    age = h.get("age", "")
+    return age.isdigit() and int(age) > 0
+
+
+async def cache_deception(ctx: Context, url: str, original: Resp, authenticated: bool) -> None:
+    """Does a static-looking suffix return the dynamic page AND get stored by a cache?
+
+    Each probe uses a unique random file name, so only WebGuard's own response is ever cached.
+    """
+    if ctx.has("cache_deception", url=url) or original.status != 200 or not original.is_html:
+        return
+    base = url.split("?")[0].split("#")[0].rstrip("/")
+    again = await ctx.client.safe_get(url)
+    # how similar the page is to itself (dynamic content); the confused path must match at least that well
+    stability = similarity(again.text, original.text) if again is not None else 1.0
+    fps = await soft404(ctx, "{0.scheme}://{0.netloc}".format(urlsplit(url)))
+    for suffix, desc in WCD_SUFFIXES:
+        probe = base + suffix.format(r=token(8))
+        r1 = await ctx.client.safe_get(probe)
+        if r1 is None or r1.status != 200 or similarity(r1.text, original.text) < stability - 0.1:
+            continue
+        if any(fp.status == 200 and similarity(r1.text, fp.text) > 0.9 for fp in fps):
+            continue  # catch-all/SPA fallback: every path returns the same shell, not a confusion bug
+        r2 = await ctx.client.safe_get(probe)
+        if r2 is None or not _cached(r2):
+            continue
+        sev = Severity.HIGH if authenticated else Severity.LOW
+        ctx.report(Finding(
+            check="cache_deception", title=f"Web cache deception ({desc})", severity=sev,
+            confidence=Confidence.FIRM, url=url, payload=probe,
+            evidence=f"{probe} returns the dynamic page and the second request is served from cache "
+                     f"({', '.join(f'{k}: {v}' for k, v in r2.headers.items() if k.lower() in ('x-cache', 'cf-cache-status', 'age', 'cache-control'))}).",
+            description="The cache treats the URL as a static file while the origin serves the dynamic page. An "
+                        "attacker who makes a victim open the crafted link can then fetch the victim's cached, "
+                        "personalised response." + ("" if authenticated else
+                                                   " Re-test with a session (-H/--cookie) to confirm personal data is cached."),
+            remediation="Cache only by explicit Cache-Control from the origin; make the origin return 404 for unknown "
+                        "path suffixes/delimiters; align cache and origin URL parsing.",
+            cwe="CWE-524", owasp="A04:2021-Insecure Design", detection=DIFFERENTIAL,
+            references=["https://portswigger.net/research/gotta-cache-em-all",
+                        "https://portswigger.net/web-security/web-cache-deception"],
+            tags=["cache", "cache-deception"], request=ctx.client.curl("GET", probe),
+        ))
+        return
