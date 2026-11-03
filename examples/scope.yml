@@ -1,0 +1,13 @@
+# Bug bounty program scope (copy the program's rules exactly).
+# Anything not matched by `include` - or matched by `exclude` - is never requested.
+include:
+  - .example.com                 # apex + all subdomains
+  - api.example.net              # single host
+  - re:^shop-[a-z]{2}\.example\.org$
+exclude:
+  - blog.example.com             # third-party hosted, out of scope
+  - status.example.com
+exclude_paths:                   # never touch these paths (destructive / logout)
+  - (?i)/log(?:out|off)\b
+  - (?i)/delete
+  - (?i)/account/close

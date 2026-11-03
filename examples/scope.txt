@@ -1,0 +1,4 @@
+# one rule per line; prefix with ! to exclude
+.example.com
+api.example.net
+!blog.example.com

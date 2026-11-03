@@ -1,0 +1,8 @@
+httpx>=0.27
+beautifulsoup4>=4.12
+pyyaml>=6.0
+# optional: ML anomaly model, DNS-based takeover detection, SOCKS/Tor proxy support
+numpy>=1.26
+scikit-learn>=1.4
+dnspython>=2.6
+httpx[socks]>=0.27
