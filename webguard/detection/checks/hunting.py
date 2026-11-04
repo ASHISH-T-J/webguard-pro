@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 from webguard.config import DATA_DIR
 from webguard.detection import anomaly
@@ -176,6 +176,7 @@ async def content_discovery(ctx: Context, root: str, words: list[str], depth: in
     Returns [(url, status)] for paths that are not the site's generic not-found / SPA fallback page.
     """
     from webguard.detection.checks.advanced import forbidden_bypass
+    from webguard.detection.checks.server import LISTING
     from webguard.nlp.paths import classify_path, recursion_priority
 
     found: list[tuple[str, int]] = []
@@ -183,6 +184,7 @@ async def content_discovery(ctx: Context, root: str, words: list[str], depth: in
     queue: list[tuple[str, int]] = [(root, 0)]
     visited: set[str] = set()
     dirs_scanned = 0
+    listed_dirs: list[str] = []
     while queue and dirs_scanned < max_dirs + 1:
         base, level = queue.pop(0)
         if base in visited:
@@ -213,7 +215,15 @@ async def content_discovery(ctx: Context, root: str, words: list[str], depth: in
 
         await asyncio.gather(*(probe(w) for w in batch))
         for d in sorted(new_dirs, key=recursion_priority):
-            queue.append((d.rstrip("/"), level + 1))
+            base_dir = d.rstrip("/")
+            idx = await ctx.client.safe_get(base_dir + "/")
+            if idx is not None and idx.status == 200 and LISTING.search(idx.text[:5000]):
+                # the server lists this directory: read its entries instead of brute-forcing it
+                entries = {urljoin(base_dir + "/", h) for h in re.findall(r'href="([^"?#]+)"', idx.text[:200000])}
+                found.extend((u, 200) for u in sorted(entries) if u.startswith(base_dir + "/") and u != base_dir + "/")
+                listed_dirs.append(base_dir)
+                continue
+            queue.append((base_dir, level + 1))
     if found:
         cats: dict[str, list[str]] = {}
         for u, st in sorted(found):
@@ -222,7 +232,9 @@ async def content_discovery(ctx: Context, root: str, words: list[str], depth: in
         ctx.report(Finding(
             check="exposure", title="Unlinked content discovered", severity=Severity.INFO, confidence=Confidence.FIRM,
             url=root + "/#content-discovery", evidence=f"{len(found)} path(s), {dirs_scanned} director(ies) "
-                                                      f"brute-forced (depth {depth}): {listing}"[:2000],
+                                                      f"brute-forced (depth {depth})"
+                                                      + (f", {len(listed_dirs)} read from listings" if listed_dirs else "")
+                                                      + f": {listing}"[:2000],
             description="Paths not linked from the application respond with real content. Review them for "
                         "sensitive files, admin functionality and forgotten endpoints.",
             remediation="Remove unused content from production and protect administrative paths.",

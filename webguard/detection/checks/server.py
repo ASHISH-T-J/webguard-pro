@@ -127,7 +127,8 @@ async def inventory(ctx: Context, root: str, pages: list[Resp]) -> list[tuple[st
 
 # ----------------------------------------------------------------------------- directory listing
 
-LISTING = re.compile(r"(?i)<title>\s*(?:Index of /|Directory listing for /|Directory Listing For /)|"
+LISTING = re.compile(r"(?i)<title>\s*(?:Index of /|Directory listing for /|Directory Listing For /|"
+                     r"listing directory /)|"
                      r"<h1>\s*Index of /|\[To Parent Directory\]")
 SENSITIVE_ENTRY = re.compile(r"(?i)href=\"[^\"]+\.(?:sql|bak|old|zip|tar|gz|tgz|7z|rar|env|key|pem|p12|pfx|log|"
                              r"conf|config|ini|db|sqlite3?|swp|backup)\"")
