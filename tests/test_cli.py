@@ -62,7 +62,8 @@ def test_cli_assess_grep_ask_analyze(tmp_path, capsys):
     with VulnServer() as server:
         code = cli.main(["assess", server.url, "--no-timing", "--rate", "1000", "--db", str(db_path),
                          "--model", str(tmp_path / "m.json"), "-o", str(out), "-f", "json,html,md",
-                         "--no-browser", "--show-trace", "--budget-requests", "5000"])
+                         "--no-browser", "--show-trace", "--budget-requests", "5000",
+                         "--report-style", "technical"])
     assert code == 2
     printed = capsys.readouterr().out
     assert "Rules of engagement" in printed and "thought:" in printed and "Executive summary" in printed

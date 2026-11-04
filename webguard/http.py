@@ -37,6 +37,8 @@ from webguard.scope import Scope
 log = logging.getLogger("webguard.http")
 
 RETRY_STATUS = {429, 502, 503, 504}
+# transport headers that add nothing to evidence (kept out of reports/screenshots)
+EVIDENCE_NOISE = {"host", "accept-encoding", "accept", "connection", "user-agent", "content-length"}
 CONNECT_LEVEL = {"dns", "refused", "connect", "connect_timeout", "tls"}
 
 
@@ -102,6 +104,44 @@ def parse_retry_after(value: str | None, cap: float = 60.0) -> float | None:
         return None
 
 
+_SOFT_LIMIT = re.compile(r"(?i)too many requests|rate limit(?:ed| exceeded)|slow down|request limit|quota exceeded|"
+                         r"try again in \d+ (?:seconds?|minutes?)")
+
+
+_STRICT_LIMIT = re.compile(r"(?i)too many requests|rate limit(?:ed| exceeded)")
+
+
+def parse_rate_headers(headers: Any) -> tuple[float | None, float | None, float | None]:
+    """(limit, remaining, reset_seconds) from IETF RateLimit / RateLimit-* / X-RateLimit-* headers."""
+    h = {k.lower(): v for k, v in headers.items()}
+    limit = remaining = reset = None
+    combined = h.get("ratelimit")  # draft-ietf-httpapi-ratelimit-headers: RateLimit: "default";r=50;t=30
+    if combined:
+        if (m := re.search(r"\br=(\d+)", combined)) or (m := re.search(r"remaining=(\d+)", combined)):
+            remaining = float(m.group(1))
+        if (m := re.search(r"\bt=(\d+)", combined)) or (m := re.search(r"reset=(\d+)", combined)):
+            reset = float(m.group(1))
+        if m := re.search(r"limit=(\d+)", combined):
+            limit = float(m.group(1))
+    policy = h.get("ratelimit-policy")
+    if policy and (m := re.search(r"\bq=(\d+)", policy) or re.match(r"\s*(\d+)", policy)):
+        limit = limit or float(m.group(1))
+    for prefix in ("ratelimit-", "x-ratelimit-", "x-rate-limit-"):
+        limit = limit if limit is not None else _num(h.get(prefix + "limit"))
+        remaining = remaining if remaining is not None else _num(h.get(prefix + "remaining"))
+        reset = reset if reset is not None else _num(h.get(prefix + "reset") or h.get(prefix + "reset-after"))
+    if reset is not None and reset > 1e9:  # epoch timestamp (GitHub style)
+        reset = max(0.0, reset - time.time())
+    return limit, remaining, reset
+
+
+def _num(v: str | None) -> float | None:
+    try:
+        return float(str(v).split(",")[0].strip()) if v not in (None, "") else None
+    except ValueError:
+        return None
+
+
 @dataclass
 class HostState:
     """Adaptive control state for one host."""
@@ -115,6 +155,15 @@ class HostState:
     cooldown: float = 5.0
     trips: int = 0
     dead: bool = False
+    paused_until: float = 0.0  # host-wide pause (rate-limit window / Retry-After)
+    cap_rate: float | None = None  # ceiling derived from RateLimit headers ...
+    cap_until: float = 0.0  # ... valid until the declared window resets
+    consecutive_429: int = 0
+    min_latency: float = 0.0
+    samples: int = 0
+    last_latency_backoff: float = 0.0
+    policy: dict = field(default_factory=dict)  # last declared limit/remaining/reset
+    pauses: int = 0
     adjustments: list[str] = field(default_factory=list)
     _half_open: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -126,6 +175,7 @@ class HostState:
         return self.bucket.rate
 
     def observe_latency(self, seconds: float) -> None:
+        self.min_latency = seconds if self.min_latency <= 0 else min(self.min_latency, seconds)
         if self.latency_ewma == 0:
             self.latency_ewma, self.latency_dev = seconds, seconds / 2
         else:
@@ -140,8 +190,53 @@ class HostState:
         return min(max(base, rto), base * 6)
 
     def increase(self) -> None:
-        if self.bucket.rate < self.max_rate:
-            self.bucket.rate = min(self.max_rate, self.bucket.rate + max(0.2, self.max_rate * 0.02))
+        ceiling = self.max_rate
+        if self.cap_rate is not None and time.monotonic() < self.cap_until:
+            ceiling = min(ceiling, self.cap_rate)  # never climb above a limit the server declared
+        if self.bucket.rate < ceiling:
+            self.bucket.rate = min(ceiling, self.bucket.rate + max(0.2, ceiling * 0.02))
+
+    def note(self, text: str) -> None:
+        if len(self.adjustments) < 50:
+            self.adjustments.append(f"{time.strftime('%H:%M:%S')} {text}")
+
+    def pause(self, seconds: float, reason: str) -> None:
+        """Pause ALL requests to this host (not just the one that hit the limit)."""
+        seconds = max(0.5, min(seconds, 120.0))
+        until = time.monotonic() + seconds
+        if until > self.paused_until:
+            self.paused_until = until
+            self.pauses += 1
+            self.note(f"paused {seconds:.1f}s: {reason}")
+
+    def observe_rate_headers(self, limit: float | None, remaining: float | None, reset: float | None) -> None:
+        """Pace to stay under a limit the server declares, before it starts answering 429."""
+        if remaining is None:
+            return
+        self.policy = {"limit": limit, "remaining": remaining, "reset_s": reset}
+        window = reset if reset and reset > 0 else 60.0
+        if remaining <= 0:
+            self.pause(window, f"rate-limit quota exhausted (limit {limit or '?'})")
+            return
+        # spend what's left evenly over the rest of the window, with 20% headroom
+        safe = max(0.2, remaining / window * 0.8)
+        low = limit is None or remaining <= max(5, limit * 0.25)
+        if low and safe < self.bucket.rate:
+            old = self.bucket.rate
+            self.bucket.rate = safe
+            self.note(f"RateLimit headers ({int(remaining)} left / {window:.0f}s): {old:.1f} -> {safe:.1f} req/s")
+        if low:
+            self.cap_rate, self.cap_until = safe, time.monotonic() + window
+
+    def observe_latency_trend(self) -> None:
+        """Back off when responses get much slower than the best observed latency (server under load)."""
+        self.samples += 1
+        if self.samples < 8 or self.min_latency <= 0:
+            return
+        now = time.monotonic()
+        if self.latency_ewma > max(1.0, self.min_latency * 4) and now - self.last_latency_backoff > 10:
+            self.last_latency_backoff = now
+            self.decrease(f"latency {self.latency_ewma * 1000:.0f} ms vs best {self.min_latency * 1000:.0f} ms", 0.7)
 
     def decrease(self, reason: str, factor: float = 0.5, floor: float = 0.5) -> None:
         old = self.bucket.rate
@@ -179,7 +274,7 @@ class Resp:
         if parts.query:
             target += "?" + parts.query
         lines = [f"{self.method} {target} HTTP/1.1", f"Host: {parts.netloc}"]
-        lines += [f"{k}: {v}" for k, v in self.request_headers.items() if k.lower() not in ("host", "accept-encoding")]
+        lines += [f"{k}: {v}" for k, v in self.request_headers.items() if k.lower() not in EVIDENCE_NOISE]
         text = "\r\n".join(lines) + "\r\n\r\n" + (self.request_body or "")
         return text[:limit]
 
@@ -268,7 +363,8 @@ class HttpClient:
         return {
             "errors_by_kind": dict(self.errors),
             "hosts": {h: {"final_rate": round(s.rate, 2), "latency_ms": round(s.latency_ewma * 1000),
-                          "circuit_trips": s.trips, "dead": s.dead, "rate_adjustments": s.adjustments[-10:]}
+                          "circuit_trips": s.trips, "dead": s.dead, "pauses": s.pauses,
+                          "declared_limit": s.policy or None, "rate_adjustments": s.adjustments[-10:]}
                       for h, s in self.hosts.items()},
         }
 
@@ -276,6 +372,9 @@ class HttpClient:
         """Returns False if the host is considered dead."""
         if st.dead:
             return False
+        wait = st.paused_until - time.monotonic()
+        if wait > 0:
+            await asyncio.sleep(wait)
         now = time.monotonic()
         if st.open_until > now:
             async with st._half_open:  # one half-open probe at a time
@@ -404,9 +503,20 @@ class HttpClient:
                     return None
 
             code = resp.status_code
-            if code == 429:
+            st.observe_rate_headers(*parse_rate_headers(resp.headers))
+            soft_limit = len(text) < 5000 and (
+                (code in (403, 503) and _SOFT_LIMIT.search(text) is not None)
+                or (code == 200 and _STRICT_LIMIT.search(text) is not None))
+            if code == 429 or soft_limit:
                 self.stats["rate_limited"] += 1
-                st.decrease("HTTP 429")
+                st.consecutive_429 += 1
+                st.decrease("HTTP 429" if code == 429 else f"soft rate limit (HTTP {code} page)")
+                retry_after = parse_retry_after(resp.headers.get("retry-after"))
+                st.pause(retry_after if retry_after is not None else min(60.0, 2.0 ** st.consecutive_429),
+                         "Retry-After" if retry_after is not None else f"backoff after {st.consecutive_429} limit response(s)")
+                if attempt <= self.config.retries:
+                    self.stats["retries"] += 1
+                    continue  # the host-wide pause is honoured by _wait_circuit before the retry
             elif code == 503:
                 self.stats["server_errors"] += 1
                 st.decrease("HTTP 503", 0.7)
@@ -419,8 +529,10 @@ class HttpClient:
                 wait = parse_retry_after(resp.headers.get("retry-after")) or _backoff(attempt, base=1.0)
                 await asyncio.sleep(wait)
                 continue
-            if code < 500 and code != 429:
+            if code < 500 and code != 429 and not soft_limit:
                 self._record_success(st, elapsed)
+                st.consecutive_429 = 0
+                st.observe_latency_trend()
             try:
                 body = resp.request.content.decode(errors="replace")[:4000] if resp.request.content else None
             except httpx.RequestNotRead:

@@ -209,6 +209,23 @@ Per-host adaptive rate control (AIMD: halve on 429/503/timeouts, recover gradual
 adaptive timeouts, and a circuit breaker that pauses unhealthy hosts and fails fast on dead ones. Error
 kinds (DNS, TLS, refused, timeouts, resets, protocol) and every rate adjustment appear in the report.
 
+**Dynamic rate limiting** - the scanner slows down to respect the target's limits:
+
+- **Declared limits** - `RateLimit` / `RateLimit-Policy` (IETF draft, both the combined and the
+  `r=`/`t=`/`q=` forms), `RateLimit-*`, `X-RateLimit-*` and `X-Rate-Limit-*` headers (reset as seconds
+  or epoch) are read on every response. When the quota runs low the rate is set to spend what is left
+  evenly over the rest of the window (20% headroom) and capped until the window resets. When the quota
+  is exhausted, the **whole host pauses** until the reset.
+- **429 / soft limits** - on a 429, or a short 403/503/200 page saying "too many requests" or "rate
+  limit exceeded", the rate is halved and the host pauses for `Retry-After` (or exponential backoff),
+  then the request is retried. Ordinary pages that merely mention "slow down" are not treated as limits.
+- **Latency backoff** - if response times climb well above the best observed latency (server under
+  load), the rate is reduced (at most once every 10 s).
+- Pauses, the declared policy and each adjustment are listed under *test conditions* in the report.
+
+This is about being a good guest on the target, not about evading limits: nothing rotates IPs or
+identities.
+
 ### Profiles
 
 | `--profile` | Use | Behaviour |
@@ -230,6 +247,11 @@ every request and **every redirect hop** is checked; background browser traffic 
 
 Images are embedded in the HTML report, linked from the Markdown submissions and saved under
 `<output>/poc/`. Disable with `--no-screenshots`.
+
+Screenshots are clean evidence: banners state only what was observed and when (no tool branding).
+Before capture, **PII and secrets on the page are blurred**: e-mail addresses, Luhn-valid card numbers,
+SSNs, phone numbers, JWTs, password hashes, API keys, cookie/authorization header values and
+password/e-mail input fields. Field and header names stay readable so the evidence still makes sense.
 
 ---
 
@@ -322,7 +344,7 @@ prefixes, excludes and a path deny-list (`/logout`, `/delete`, …).
 
 - **HTML** - executive summary, key risks, next steps, attack chains, root-cause issues with CVSS,
   **test conditions** (environment, defences detected, NOT-TESTED inputs, network errors, adaptive rate
-  changes, JS-analysis summary), WSTG coverage matrix, full reasoning trace, and findings filterable by
+  changes, JS-analysis summary), WSTG coverage matrix, reasoning trace (technical style), and findings filterable by
   text, severity and "verified only". Each finding shows its **context** (environment, page type, WAF,
   verification status, review notes) and, for re-verified findings, the **exact HTTP request/response**
   (excerpt centred on the payload). Every value is escaped (payloads are attacker strings).
@@ -331,7 +353,22 @@ prefixes, excludes and a path deny-list (`/logout`, `/delete`, …).
   sqlmap/dalfox follow-ups.
 - **SARIF 2.1.0** - GitHub code scanning / CI. `scan`, `assess` and `hunt` exit with `2` when a
   HIGH/CRITICAL finding exists, so they can gate pipelines.
-- **JSON** - everything, including trace, facts, coverage and OOB tokens.
+- **JSON** - findings, summary and assessment metadata (trace, facts and OOB tokens in technical style).
+
+**Report style and hygiene**
+
+| Option | Effect |
+|---|---|
+| `--report-style client` (default) | deliverable for the client / programme: no tool branding, ML scores, reasoning trace, raw stats or internal review notes |
+| `--report-style technical` | everything, including the reasoning trace, ML triage scores, reasoner, grep highlights and tool metadata |
+| `--report-author "ACME Security"` | "prepared by" line in the header (and SARIF driver name in client style) |
+| `--report-title "…"` | report title (default "Security Assessment Report") |
+| `--no-redact` | keep raw values (default: redact) |
+
+By default every report format **redacts PII and secrets** in evidence, HTTP excerpts and narrative:
+e-mails become `a***@example.com`, card numbers `**** **** **** 4242`, hashes/JWTs/API keys keep only a
+short prefix (`eyJ…[redacted JWT]`), and cookie, authorization and password values become `[redacted]`.
+URLs, fingerprints, IP addresses, dates and versions are left intact, so findings stay reproducible.
 
 ---
 
@@ -414,7 +451,7 @@ diminishing returns for repeated test types - all visible in the reasoning trace
 Common options: `--profile safe|standard|thorough`, `--scope`, `--subdomains`, `-H`, `--cookie`, `--proxy`, `--rate`, `-c`, `--timeout`,
 `--depth`, `--max-urls`, `--checks`/`--skip`, `--no-timing`, `--time-delay`, `--param-discovery`,
 `--oob`, `--tamper`, `--signatures`, `--wordlist`, `--no-discovery`, `--no-screenshots`, `-o`, `-f`, `--db`,
-`--model`, `-v`.
+`--report-style client|technical`, `--report-author`, `--report-title`, `--no-redact`, `--model`, `-v`.
 
 Legacy entry points `python3 webguard.py -d example.com -m passive|active|vulnerability` and
 `python3 scanner.py -d …` still work (translated to the commands above).
@@ -442,7 +479,7 @@ webguard/
   workflows/             recon, hunt (bug bounty), redteam (attack surface + ATT&CK)
   db.py                  SQLite: scans, assets (first/last seen), findings, labels, responses, trace
   ml/triage.py           logistic-regression triage model
-  reporting/             JSON, HTML, SARIF, Markdown
+  reporting/             JSON, HTML, SARIF, Markdown · client/technical styles · redact.py (PII/secret masking, screenshot blur) · poc.py
   data/                  signatures/*.json (SQL errors, tech, WAF, secrets, exposures, takeover,
                          disclosure) · wordlists (quick, common, params)
 ```
@@ -456,7 +493,7 @@ Extend detection without code: drop JSON files into a directory and pass `--sign
 
 ```bash
 pip install -e ".[all,dev]"
-pytest -q                       # 153 tests: e2e detection + safe twins, resilience, context, agent, budget, NLP, reasoners, CLI
+pytest -q                       # 161 tests: e2e detection + safe twins, resilience/rate limits, context, agent, reporting/redaction, NLP, CLI
 ruff check webguard tests
 python tests/vulnapp.py         # run the vulnerable test app locally
 python benchmarks/juice_shop.py # benchmark against a running Juice Shop

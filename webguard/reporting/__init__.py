@@ -6,6 +6,7 @@ import base64
 import html
 import json
 from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -13,21 +14,62 @@ from typing import Any
 from webguard import __version__
 from webguard.models import Finding, Severity
 from webguard.recon.tools import handoff_commands
+from webguard.reporting.redact import redact_obj
+
+
+@dataclass
+class ReportOptions:
+    """How a report is presented.
+
+    ``client`` style is the deliverable: neutral title, no tool branding, no internal scoring/telemetry.
+    ``technical`` style adds ML scores, detection methods, the reasoning trace and network diagnostics.
+    ``redact`` masks PII and secrets in every format (the raw data stays in the local database).
+    """
+
+    style: str = "client"
+    redact: bool = True
+    author: str | None = None
+    title: str = "Security Assessment Report"
+
+    @property
+    def technical(self) -> bool:
+        return self.style == "technical"
+
+
+CLIENT_META_DROP = {"trace", "reasoner", "resilience", "grep_highlights", "facts", "page_types", "stats", "oob"}
+CLIENT_FINDING_DROP = {"ml_score", "features", "detection"}
+CLIENT_CONTEXT_DROP = {"review_notes", "poc_observed"}
 
 SEV_COLORS = {"CRITICAL": "#7b1fa2", "HIGH": "#d32f2f", "MEDIUM": "#f57c00", "LOW": "#1976d2", "INFO": "#607d8b"}
 CVSS_HINT = {"CRITICAL": "9.0-10.0", "HIGH": "7.0-8.9", "MEDIUM": "4.0-6.9", "LOW": "0.1-3.9", "INFO": "0.0"}
 
 
-def build_report(target: str, findings: list[Finding], meta: dict[str, Any] | None = None) -> dict[str, Any]:
+def build_report(target: str, findings: list[Finding], meta: dict[str, Any] | None = None,
+                 options: ReportOptions | None = None) -> dict[str, Any]:
+    opts = options or ReportOptions()
     counts = Counter(f.severity.name for f in findings)
-    return {
-        "tool": {"name": "WebGuard Pro", "version": __version__},
+    items = [f.to_dict() for f in findings]
+    meta = dict(meta or {})
+    if not opts.technical:
+        meta = {k: v for k, v in meta.items() if k not in CLIENT_META_DROP}
+        for item in items:
+            for k in CLIENT_FINDING_DROP:
+                item.pop(k, None)
+            item["context"] = {k: v for k, v in (item.get("context") or {}).items() if k not in CLIENT_CONTEXT_DROP}
+    report = {
+        "report": {"title": opts.title, "prepared_by": opts.author, "style": opts.style, "redacted": opts.redact},
         "target": target,
         "generated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "summary": {s.name: counts.get(s.name, 0) for s in sorted(Severity, reverse=True)},
-        "meta": meta or {},
-        "findings": [f.to_dict() for f in findings],
+        "meta": meta,
+        "findings": items,
     }
+    if opts.technical:
+        report["tool"] = {"name": "WebGuard Pro", "version": __version__}
+    if opts.redact:
+        report["meta"] = redact_obj(report["meta"])
+        report["findings"] = redact_obj(report["findings"])
+    return report
 
 
 def write_json(report: dict[str, Any], path: Path) -> Path:
@@ -55,14 +97,17 @@ def write_sarif(report: dict[str, Any], path: Path) -> Path:
             "message": {"text": f"{f['title']}: {f.get('evidence', '')}"[:1000]},
             "locations": [{"physicalLocation": {"artifactLocation": {"uri": f["url"]}}}],
             "partialFingerprints": {"webguard/v1": f["fingerprint"]},
-            "properties": {"severity": f["severity"], "confidence": f["confidence"], "parameter": f.get("parameter"),
-                           "payload": f.get("payload"), "ml_score": f.get("ml_score")},
+            "properties": {k: v for k, v in {"severity": f["severity"], "confidence": f["confidence"],
+                                             "parameter": f.get("parameter"), "payload": f.get("payload"),
+                                             "ml_score": f.get("ml_score")}.items() if v is not None},
         })
     sarif = {
         "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
         "version": "2.1.0",
-        "runs": [{"tool": {"driver": {"name": "WebGuard Pro", "version": __version__,
-                                      "informationUri": "https://github.com/ashish-t-j/webguard-pro",
+        "runs": [{"tool": {"driver": {**({"name": "WebGuard Pro", "version": __version__,
+                                         "informationUri": "https://github.com/ashish-t-j/webguard-pro"}
+                                        if "tool" in report else {"name": report["report"]["prepared_by"]
+                                                                  or report["report"]["title"]}),
                                       "rules": list(rules.values())}},
                   "results": results}],
     }
@@ -76,6 +121,7 @@ def _e(value: Any) -> str:
 
 def write_html(report: dict[str, Any], path: Path) -> Path:
     """Self-contained HTML report. Every value is escaped - payloads are attacker strings."""
+    technical = report["report"].get("style") == "technical"
     rows = []
     for f in report["findings"]:
         color = SEV_COLORS[f["severity"]]
@@ -89,9 +135,10 @@ def write_html(report: dict[str, Any], path: Path) -> Path:
                 ("Description", _e(f.get("description"))),
                 ("Remediation", _e(f.get("remediation"))),
                 ("Classification", _e(" · ".join(x for x in [f.get("cwe"), f.get("owasp")] if x))),
-                ("Detection", _e(f"{f.get('detection')} · ML true-positive score {f.get('ml_score')}")),
+                ("Detection", _e(f"{f.get('detection')} · ML true-positive score {f.get('ml_score')}")
+                 if technical else ""),
                 ("Reproduce", f"<pre>{_e(f.get('request'))}</pre>" if f.get("request") else ""),
-                ("Context", _context_html(f.get("context") or {})),
+                ("Context", _context_html(f.get("context") or {}, technical)),
                 ("HTTP evidence", _http_html(f.get("context") or {})),
                 ("PoC screenshot", _poc_html(f.get("context") or {}, path.parent)),
             ] if v and v not in ("<code></code>", "<code>None</code>")
@@ -115,7 +162,7 @@ def write_html(report: dict[str, Any], path: Path) -> Path:
     )
     doc = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>WebGuard report - {_e(report['target'])}</title>
+<title>{_e(report['report']['title'])} - {_e(report['target'])}</title>
 <style>
 :root{{--bg:#fafafa;--fg:#212121;--card:#fff;--muted:#757575;--line:#e0e0e0}}
 @media (prefers-color-scheme:dark){{:root{{--bg:#121212;--fg:#eee;--card:#1e1e1e;--muted:#9e9e9e;--line:#333}}}}
@@ -132,12 +179,12 @@ table{{border-collapse:collapse;width:100%}} td,th{{border-bottom:1px solid var(
 input#q{{padding:6px;width:100%;max-width:320px;margin:8px 0}} .bar{{display:flex;flex-wrap:wrap;gap:10px;align-items:center}}
 @media (max-width:600px){{dl{{grid-template-columns:1fr}}}}
 </style></head><body>
-<h1>WebGuard security report</h1>
-<div class="muted">Target <b>{_e(report['target'])}</b> · generated {_e(report['generated'])} · WebGuard {_e(report['tool']['version'])}</div>
+<h1>{_e(report['report']['title'])}</h1>
+<div class="muted">Target <b>{_e(report['target'])}</b> · {_e(report['generated'][:10])}{(' · prepared by ' + _e(report['report']['prepared_by'])) if report['report'].get('prepared_by') else ''}{' · sensitive values masked' if report['report'].get('redacted') else ''}</div>
 <div class="cards">{summary}</div>
 {"<h2>Hosts</h2><table><tr><th>URL</th><th>Status</th><th>Title</th><th>Technologies</th><th>WAF</th></tr>" + host_rows + "</table>" if host_rows else ""}
-{_assessment_sections(meta)}
-{_conditions_html(meta)}
+{_assessment_sections(meta, technical)}
+{_conditions_html(meta, technical)}
 <h2>Findings ({len(report['findings'])})</h2>
 <div class="bar"><input id="q" placeholder="Filter findings…" oninput="filt()">
 {''.join(f'<label><input type="checkbox" class="sv" value="{k}" checked onchange="filt()"> {k}</label>' for k in report['summary'])}
@@ -149,7 +196,7 @@ input#q{{padding:6px;width:100%;max-width:320px;margin:8px 0}} .bar{{display:fle
     return path
 
 
-POC_LABEL = {"browser-execution": "script execution observed in headless Chromium",
+POC_LABEL = {"browser-execution": "script execution observed in the browser",
              "live-response": "live response, evidence highlighted",
              "http-evidence": "recorded HTTP request/response"}
 
@@ -162,15 +209,21 @@ def _poc_html(ctx: dict[str, Any], base: Path) -> str:
     label = POC_LABEL.get(ctx.get("poc_kind", ""), "")
     return (f"<figure style='margin:0'><img alt='PoC screenshot' src='data:image/png;base64,{data}' "
             f"style='max-width:100%;border:1px solid var(--line);border-radius:4px'>"
-            f"<figcaption class='muted'>{_e(label)} · file: {_e(rel)}</figcaption></figure>")
+            f"<figcaption class='muted'>{_e(label)}</figcaption></figure>")
 
 
-def _context_html(ctx: dict[str, Any]) -> str:
-    keys = [("environment", "Environment"), ("page_type", "Page type"), ("waf", "WAF in front"),
-            ("verification", "Verification"), ("environment_note", "Note"), ("review_notes", "Review before reporting")]
+def _context_html(ctx: dict[str, Any], technical: bool = True) -> str:
+    keys = [("environment", "Environment"), ("waf", "WAF in front"), ("verification", "Verification"),
+            ("environment_note", "Note")]
+    if technical:
+        keys = [("page_type", "Page type"), *keys, ("review_notes", "Review before reporting")]
+    if ctx.get("bypass"):
+        keys.append(("bypass", "Filter bypass"))
     items = []
     for k, label in keys:
         v = ctx.get(k)
+        if isinstance(v, dict):
+            v = f"{v.get('variant')} ({v.get('technique_source')})"
         if v:
             items.append(f"<b>{_e(label)}:</b> {_e(', '.join(v) if isinstance(v, list) else v)}")
     return "<br>".join(items)
@@ -183,12 +236,12 @@ def _http_html(ctx: dict[str, Any]) -> str:
             f"<pre>{_e(ctx.get('http_response', ''))}</pre></details>")
 
 
-def _conditions_html(meta: dict[str, Any]) -> str:
-    """Test conditions: environment, defences encountered, untested inputs, network resilience."""
-    if not meta.get("environment") and not meta.get("resilience"):
+def _conditions_html(meta: dict[str, Any], technical: bool = True) -> str:
+    """Test conditions: environment, defences encountered, untested inputs (+ network diagnostics if technical)."""
+    if not meta.get("environment") and not meta.get("resilience") and not meta.get("obstructed_inputs"):
         return ""
-    parts = [f"<p><b>Environment:</b> {_e(meta.get('environment', 'unknown'))} · <b>Reasoner:</b> "
-             f"{_e(meta.get('reasoner', 'local'))}</p>"]
+    parts = [f"<p><b>Environment:</b> {_e(meta.get('environment', 'unknown'))}"
+             + (f" · <b>Reasoner:</b> {_e(meta.get('reasoner', 'local'))}" if technical else "") + "</p>"]
     wafs = sorted({w for h in meta.get("hosts", []) for w in h.get("waf", [])})
     if wafs:
         parts.append(f"<p><b>Defences detected:</b> {_e(', '.join(wafs))}. Responses produced by these defences were "
@@ -212,7 +265,7 @@ def _conditions_html(meta: dict[str, Any]) -> str:
     return "<h2>Test conditions</h2>" + "".join(parts)
 
 
-def _assessment_sections(meta: dict[str, Any]) -> str:
+def _assessment_sections(meta: dict[str, Any], technical: bool = True) -> str:
     """Narrative, attack chains, issues, WSTG coverage and reasoning trace (assessment mode)."""
     out = []
     narrative = meta.get("narrative") or {}
@@ -222,7 +275,7 @@ def _assessment_sections(meta: dict[str, Any]) -> str:
         out.append(f"<h2>Executive summary</h2><p>{_e(narrative['executive_summary']).replace('**', '')}</p>"
                    + (f"<h3>Key risks</h3><ul>{risks}</ul>" if risks else "")
                    + (f"<h3>Recommended next steps</h3><ol>{steps}</ol>" if steps else "")
-                   + f"<p class='muted'>Reasoning engine: {_e(meta.get('reasoner', 'local'))}</p>")
+                   + (f"<p class='muted'>Reasoning engine: {_e(meta.get('reasoner', 'local'))}</p>" if technical else ""))
     chains = meta.get("attack_chains") or []
     if chains:
         rows = "".join(f"<tr><td><span class='sev' style='background:{SEV_COLORS[c['severity']]}'>{_e(c['severity'])}</span></td>"
@@ -245,7 +298,7 @@ def _assessment_sections(meta: dict[str, Any]) -> str:
                        f"<td style='color:{color.get(v, '#000')}'><b>{_e(v)}</b></td></tr>" for k, v in coverage.items())
         out.append(f"<details><summary><h2 style='display:inline'>OWASP WSTG coverage</h2></summary><table>{rows}</table></details>")
     trace = meta.get("trace") or []
-    if trace:
+    if trace and technical:
         rows = "".join(f"<tr><td>{t['step']}</td><td>{_e(t['phase'])}</td><td>{_e(t['thought'])}</td>"
                        f"<td>{_e(', '.join(t['actions'][:8]))}{' …' if len(t['actions']) > 8 else ''}</td>"
                        f"<td>{_e(t['observation'])}</td></tr>" for t in trace)
@@ -255,13 +308,14 @@ def _assessment_sections(meta: dict[str, Any]) -> str:
     return "\n".join(out)
 
 
-def finding_markdown(f: Finding) -> str:
+def finding_markdown(f: Finding, technical: bool = False) -> str:
     """One bug-bounty-ready submission (HackerOne / Bugcrowd / Intigriti style)."""
     steps = []
     if f.request:
-        steps.append(f"1. Send the following request:\n\n```bash\n{f.request}\n```")
+        lang = "text" if f.request.startswith("open in browser") else "bash"
+        steps.append(f"1. Send the following request:\n\n```{lang}\n{f.request}\n```")
     steps.append(f"{len(steps) + 1}. Observe: {f.evidence}")
-    handoff = handoff_commands(f)
+    handoff = handoff_commands(f) if technical else []
     extra = ("\n\n### Further verification\n\n" + "\n".join(f"```bash\n{c}\n```" for c in handoff)) if handoff else ""
     refs = "\n".join(f"- {r}" for r in f.references)
     return f"""## {f.title}
@@ -279,7 +333,7 @@ def finding_markdown(f: Finding) -> str:
 {chr(10).join(steps)}
 
 **Payload:** `{f.payload or 'n/a'}`
-{_md_evidence(f)}
+{_md_evidence(f, technical)}
 
 ### Impact
 
@@ -293,7 +347,7 @@ def finding_markdown(f: Finding) -> str:
 """
 
 
-def _md_evidence(f: Finding) -> str:
+def _md_evidence(f: Finding, technical: bool = False) -> str:
     ctx = f.context or {}
     out = ""
     if ctx.get("poc_screenshot"):
@@ -301,7 +355,8 @@ def _md_evidence(f: Finding) -> str:
     if ctx.get("http_request"):
         out += f"\n**HTTP request**\n\n```http\n{ctx['http_request']}\n```\n"
         out += f"\n**HTTP response (excerpt)**\n\n```http\n{ctx.get('http_response', '')[:2500]}\n```\n"
-    notes = [ctx.get("verification"), ctx.get("environment_note")] + list(ctx.get("review_notes") or [])
+    notes = [ctx.get("verification"), ctx.get("environment_note")] + (list(ctx.get("review_notes") or [])
+                                                                      if technical else [])
     notes = [n for n in notes if n]
     if notes:
         out += "\n> " + "  \n> ".join(notes) + "\n"
@@ -328,26 +383,33 @@ def _impact(f: Finding) -> str:
 
 
 def write_markdown(target: str, findings: list[Finding], path: Path, min_severity: Severity = Severity.LOW,
-                   meta: dict[str, Any] | None = None) -> Path:
+                   meta: dict[str, Any] | None = None, options: ReportOptions | None = None) -> Path:
+    opts = options or ReportOptions()
     selected = [f for f in findings if f.severity >= min_severity]
-    head = (f"# Security findings for {target}\n\n_Generated by WebGuard {__version__} on "
-            f"{datetime.now(timezone.utc):%Y-%m-%d}. Verify every finding manually before submitting._\n\n")
+    if opts.redact:  # work on masked copies; the raw findings stay in the database
+        selected = [Finding.from_dict(redact_obj(f.to_dict())) for f in selected]
+    byline = f" · Prepared by {opts.author}" if opts.author else ""
+    head = f"# {opts.title}: {target}\n\n_Date: {datetime.now(timezone.utc):%Y-%m-%d}{byline}_\n\n"
+    if opts.technical:
+        head += f"_Generated by WebGuard {__version__}. Verify every finding manually before submitting._\n\n"
     toc = "\n".join(f"- [{f.severity.name}] {f.title} - `{f.url}`" for f in selected)
-    meta = meta or {}
+    meta = redact_obj(meta or {}) if opts.redact else (meta or {})
     extra = ""
     if (meta.get("narrative") or {}).get("executive_summary"):
         extra += "## Executive summary\n\n" + meta["narrative"]["executive_summary"] + "\n\n"
     if meta.get("attack_chains"):
         extra += "## Attack chains\n\n" + "\n".join(
             f"- **{c['severity']} - {c['title']}**: {c['steps']}" for c in meta["attack_chains"]) + "\n\n"
-    path.write_text(head + extra + "## Findings\n\n" + toc + "\n\n---\n\n" + "\n---\n\n".join(finding_markdown(f) for f in selected))
+    path.write_text(head + extra + "## Findings\n\n" + toc + "\n\n---\n\n"
+                    + "\n---\n\n".join(finding_markdown(f, opts.technical) for f in selected))
     return path
 
 
 def write_all(target: str, findings: list[Finding], out_dir: Path, formats: list[str],
-              meta: dict[str, Any] | None = None) -> list[Path]:
+              meta: dict[str, Any] | None = None, options: ReportOptions | None = None) -> list[Path]:
+    opts = options or ReportOptions()
     out_dir.mkdir(parents=True, exist_ok=True)
-    report = build_report(target, findings, meta)
+    report = build_report(target, findings, meta, opts)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe = "".join(c if c.isalnum() or c in ".-" else "_" for c in target.split("://")[-1]).strip("._")
     base = f"{safe}_{stamp}"  # note: not Path.with_suffix - targets contain dots
@@ -359,5 +421,5 @@ def write_all(target: str, findings: list[Finding], out_dir: Path, formats: list
     if "sarif" in formats:
         written.append(write_sarif(report, out_dir / f"{base}.sarif"))
     if "md" in formats:
-        written.append(write_markdown(target, findings, out_dir / f"{base}.md", meta=meta))
+        written.append(write_markdown(target, findings, out_dir / f"{base}.md", meta=meta, options=opts))
     return written

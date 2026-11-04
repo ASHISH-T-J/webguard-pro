@@ -438,7 +438,7 @@ def _cached(resp: Resp) -> bool:
 async def cache_deception(ctx: Context, url: str, original: Resp, authenticated: bool) -> None:
     """Does a static-looking suffix return the dynamic page AND get stored by a cache?
 
-    Each probe uses a unique random file name, so only WebGuard's own response is ever cached.
+    Each probe uses a unique random file name, so only the tester's own response is ever cached.
     """
     if ctx.has("cache_deception", url=url) or original.status != 200 or not original.is_html:
         return

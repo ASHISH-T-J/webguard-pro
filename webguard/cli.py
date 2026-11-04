@@ -66,9 +66,27 @@ def _common(p: argparse.ArgumentParser) -> None:
     g.add_argument("-o", "--output", default="reports", help="report directory (default ./reports)")
     g.add_argument("-f", "--format", default="json,html,md", help=f"report formats: {','.join(FORMATS)}")
     g.add_argument("--no-screenshots", action="store_true", help="skip PoC screenshots (headless Chromium)")
+    _report_args(g)
     g.add_argument("--db", default=str(DEFAULT_DB), help=f"SQLite database (default {DEFAULT_DB})")
     g.add_argument("--model", default=str(DEFAULT_MODEL), help="ML triage model path")
     g.add_argument("-v", "--verbose", action="count", default=0)
+
+
+def _report_args(g) -> None:
+    g.add_argument("--report-style", choices=["client", "technical"], default="client",
+                   help="client = clean deliverable (default); technical = adds ML scores, trace, diagnostics")
+    g.add_argument("--report-author", help="'Prepared by' line, e.g. your name or company")
+    g.add_argument("--report-title", default="Security Assessment Report")
+    g.add_argument("--no-redact", action="store_true",
+                   help="do not mask PII/secrets in reports and screenshots (internal use only)")
+
+
+def _report_options(args):
+    from webguard.reporting import ReportOptions
+
+    return ReportOptions(style=getattr(args, "report_style", "client"), redact=not getattr(args, "no_redact", False),
+                         author=getattr(args, "report_author", None),
+                         title=getattr(args, "report_title", "Security Assessment Report"))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -111,6 +129,7 @@ def build_parser() -> argparse.ArgumentParser:
     rep.add_argument("-f", "--format", default="json,html,md")
     rep.add_argument("--min-severity", default="INFO")
     rep.add_argument("--db", default=str(DEFAULT_DB))
+    _report_args(rep)
 
     d = sub.add_parser("db", help="query the findings/asset database")
     d.add_argument("--db", default=str(DEFAULT_DB))
@@ -248,7 +267,8 @@ async def cmd_scan(args: argparse.Namespace) -> int:
         res = await engine.scan(target)
         await _screenshots(args, cfg, scope, res.findings)
         new = _persist(db, scan_id, target, res)
-        paths = write_all(target, res.findings, Path(args.output), _formats(args.format), {"scan_id": scan_id, **res.meta()})
+        paths = write_all(target, res.findings, Path(args.output), _formats(args.format), {"scan_id": scan_id, **res.meta()},
+                      _report_options(args))
         _summary(res.findings, new, res.stats, paths, scan_id)
         if res.oob:
             ui.warn(f"{len(res.oob)} OOB payloads sent - check {cfg.oob_domain} for interactions (tokens in JSON report)")
@@ -265,7 +285,7 @@ async def _screenshots(args, cfg: ScanConfig, scope: Scope, findings: list) -> N
     if not poc.HAVE_PLAYWRIGHT:  # HTTP evidence is still collected; only the images need a browser
         ui.warn("PoC screenshots skipped: pip install playwright (and a Chromium) to enable them")
     ui.status("Collecting PoC evidence and screenshots")
-    n = await poc.capture(findings, cfg, scope, Path(args.output))
+    n = await poc.capture(findings, cfg, scope, Path(args.output), redact=not args.no_redact)
     ui.status(f"  {n} screenshot(s) saved under {Path(args.output) / 'poc'}")
 
 
@@ -321,7 +341,8 @@ async def cmd_assess(args: argparse.Namespace) -> int:
     res = await agent.run(args.target)
     await _screenshots(args, cfg, scope, res.findings)
     new = _persist(db, scan_id, args.target, res)
-    paths = write_all(args.target, res.findings, Path(args.output), _formats(args.format), {"scan_id": scan_id, **res.meta()})
+    paths = write_all(args.target, res.findings, Path(args.output), _formats(args.format), {"scan_id": scan_id, **res.meta()},
+                      _report_options(args))
     print(ui.c("\nExecutive summary", "bold"))
     print("  " + res.narrative.get("executive_summary", ""))
     if res.chains:
@@ -464,7 +485,7 @@ async def cmd_hunt(args: argparse.Namespace) -> int:
     res = await hunt(args.domain, cfg, scope, db, Path(args.output), _formats(args.format), max_hosts=args.max_hosts,
                      use_nuclei=not args.no_nuclei, use_tools=not args.no_tools,
                      content_discovery=args.content_discovery, parallel_hosts=args.parallel_hosts,
-                     screenshots=not args.no_screenshots, on_finding=ui.print_finding,
+                     screenshots=not args.no_screenshots, report_options=_report_options(args), on_finding=ui.print_finding,
                      status=ui.status)
     print(ui.c("\nTop targets by attack-surface score:", "bold"))
     for r in res.ranking[:10]:
@@ -502,7 +523,7 @@ async def cmd_surface(args: argparse.Namespace) -> int:
     meta = {"scan_id": res.scan_id, "hosts": [h.to_dict() for h in res.recon.hosts], "ports": res.ports,
             "services": res.services, "ranking": [{k: v for k, v in r.items() if k != "host"} for r in res.ranking],
             "attack_techniques": techniques}
-    paths = write_all(args.domain, res.findings, Path(args.output), _formats(args.format), meta)
+    paths = write_all(args.domain, res.findings, Path(args.output), _formats(args.format), meta, _report_options(args))
     for p in paths:
         ui.status(f"Report: {p}")
     return 0
@@ -516,7 +537,8 @@ def cmd_report(args: argparse.Namespace) -> int:
     if row is None:
         raise SystemExit(f"scan {args.scan_id} not found")
     findings = db.findings(scan_id=args.scan_id, min_severity=int(Severity.parse(args.min_severity)))
-    for p in write_all(row["target"], findings, Path(args.output), _formats(args.format), {"scan_id": args.scan_id}):
+    for p in write_all(row["target"], findings, Path(args.output), _formats(args.format), {"scan_id": args.scan_id},
+                       _report_options(args)):
         ui.status(f"Report: {p}")
     return 0
 

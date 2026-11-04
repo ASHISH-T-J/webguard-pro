@@ -28,6 +28,7 @@ from webguard.config import ScanConfig
 from webguard.detection.checks.dom import HAVE_PLAYWRIGHT, launch_browser, scoped_router
 from webguard.http import HttpClient
 from webguard.models import Finding, Severity
+from webguard.reporting.redact import BLUR_JS
 from webguard.scope import Scope
 
 log = logging.getLogger("webguard.poc")
@@ -154,7 +155,7 @@ def _panel_html(f: Finding) -> str:
     return f"""<!doctype html><meta charset=utf-8><body style="margin:0;font:13px/1.45 ui-monospace,Menlo,monospace;
 background:#1e1e1e;color:#ddd"><div style="padding:12px 16px;background:#c62828;color:#fff;font:600 15px system-ui">
 {html.escape(f.severity.name)} · {html.escape(f.title)}</div><div style="padding:8px 16px;color:#aaa;font:12px system-ui">
-{html.escape(f.url)}{' · parameter ' + html.escape(f.parameter) if f.parameter else ''} · evidence recorded by WebGuard ·
+{html.escape(f.url)}{' · parameter ' + html.escape(f.parameter) if f.parameter else ''} ·
 {html.escape(f.evidence[:300])}</div><div style="display:flex;gap:12px;padding:12px 16px">
 <pre style="flex:1;white-space:pre-wrap;word-break:break-all;background:#252526;padding:10px;margin:0">{html.escape(req)}</pre>
 <pre style="flex:1;white-space:pre-wrap;word-break:break-all;background:#252526;padding:10px;margin:0">{esc_resp}</pre>
@@ -162,7 +163,7 @@ background:#1e1e1e;color:#ddd"><div style="padding:12px 16px;background:#c62828;
 
 
 async def capture(findings: list[Finding], config: ScanConfig, scope: Scope, out_dir: Path,
-                  min_severity: Severity = Severity.MEDIUM, limit: int = 40) -> int:
+                  min_severity: Severity = Severity.MEDIUM, limit: int = 40, redact: bool = True) -> int:
     """Capture PoC screenshots; stores the relative path in ``finding.context['poc_screenshot']``."""
     selected = [f for f in sorted(findings, key=lambda f: (-f.severity, -f.confidence))
                 if f.severity >= min_severity and f.check != "anomaly"][:limit]
@@ -215,12 +216,12 @@ async def capture(findings: list[Finding], config: ScanConfig, scope: Scope, out
                                 # nothing executed on this load: fall back to the recorded HTTP evidence panel
                                 raise RuntimeError("no execution observed")
                             kind = "browser-execution"
-                            await page.evaluate(BANNER_JS, [f"WebGuard PoC - script executed: {observed} - {stamp}", True])
+                            await page.evaluate(BANNER_JS, [f"Script executed: {observed} · {stamp}", True])
                         else:
                             kind = "live-response"
                             hits = await page.evaluate(HIGHLIGHT_JS, _needles(f))
                             note = "evidence highlighted" if hits else "live response (evidence not visible as text)"
-                            await page.evaluate(BANNER_JS, [f"WebGuard PoC - {f.title} - {note} - {stamp}", False])
+                            await page.evaluate(BANNER_JS, [f"{f.title} · {note} · {stamp}", False])
                     else:
                         raise RuntimeError("not GET-reproducible")
                 except Exception:
@@ -237,6 +238,8 @@ async def capture(findings: list[Finding], config: ScanConfig, scope: Scope, out
                         return
                 path = shots / f"{f.fingerprint}.png"
                 try:
+                    if redact:  # blur PII / secrets on the page before it is captured
+                        f.context["poc_redactions"] = await page.evaluate(BLUR_JS)
                     await page.screenshot(path=str(path), full_page=False)
                     f.context["poc_screenshot"] = f"poc/{path.name}"
                     f.context["poc_kind"] = kind

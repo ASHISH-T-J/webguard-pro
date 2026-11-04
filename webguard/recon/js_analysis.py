@@ -191,7 +191,7 @@ def report_findings(ctx: Context, rep: JsReport) -> None:
             check="exposure", title="JavaScript source map exposed", severity=Severity.LOW, confidence=Confidence.CERTAIN,
             url=map_url, evidence=f"Source map with {n} original source file(s) is publicly readable.",
             description="Source maps reveal the original, un-minified source tree: internal routes, comments, feature "
-                        "flags and occasionally hard-coded credentials. WebGuard mined the original sources for "
+                        "flags and occasionally hard-coded credentials. The original sources were also analysed for "
                         "endpoints and secrets (findings attributed to '.map#<file>').",
             remediation="Do not deploy .map files to production (or restrict them to internal networks).",
             cwe="CWE-540", owasp="A05:2021-Security Misconfiguration", detection=PASSIVE, tags=["js", "source-map"],

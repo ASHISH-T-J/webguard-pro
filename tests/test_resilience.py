@@ -95,3 +95,67 @@ def test_profiles():
     assert thorough.param_discovery and thorough.discovery_wordlist.name == "common.txt"
     with pytest.raises(ValueError):
         apply_profile(ScanConfig(), "yolo")
+
+
+# ------------------------------------------------------------------ dynamic rate-limit handling
+
+def test_paces_to_declared_ratelimit_headers():
+    def handler(req):
+        return httpx.Response(200, text="ok", headers={"RateLimit-Limit": "100", "RateLimit-Remaining": "4",
+                                                        "RateLimit-Reset": "20"})
+
+    async def run():
+        async with _client(handler) as c:
+            for _ in range(3):
+                await c.get("https://t.test/")
+            return c.host("https://t.test/")
+
+    st = asyncio.run(run())
+    assert st.rate <= max(0.2, 4 / 20 * 0.8) + 1e-6  # remaining spread over the window (0.2 req/s floor)
+    assert st.cap_rate is not None and st.policy["remaining"] == 4
+    assert any("RateLimit headers" in a for a in st.adjustments)
+
+
+def test_exhausted_quota_pauses_whole_host():
+    import time
+
+    calls = []
+
+    def handler(req):
+        calls.append(time.monotonic())
+        if len(calls) == 1:
+            return httpx.Response(200, text="ok", headers={"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1"})
+        return httpx.Response(200, text="ok")
+
+    async def run():
+        async with _client(handler) as c:
+            await c.get("https://t.test/a")
+            await asyncio.gather(c.get("https://t.test/b"), c.get("https://t.test/c"))  # both wait for the window
+            return c.host("https://t.test/")
+
+    st = asyncio.run(run())
+    assert min(calls[1:]) - calls[0] >= 0.9 and st.pauses == 1
+
+
+def test_429_without_retry_after_backs_off_host_wide_and_soft_limits_are_detected():
+    seq = iter([httpx.Response(429, text="slow"), httpx.Response(200, text="<h1>Too many requests</h1>"),
+                httpx.Response(200, text="welcome")] + [httpx.Response(200, text="welcome")] * 5)
+
+    async def run():
+        async with _client(lambda req: next(seq)) as c:
+            r = await c.get("https://t.test/")
+            return r, c.stats, c.host("https://t.test/")
+
+    r, stats, st = asyncio.run(run())
+    assert r.status == 200 and r.text == "welcome"
+    assert stats["rate_limited"] == 2 and st.pauses >= 1
+    assert any("soft rate limit" in a for a in st.adjustments)
+
+
+def test_ordinary_pages_mentioning_slow_down_are_not_rate_limits():
+    async def run():
+        async with _client(lambda req: httpx.Response(200, text="Tips: slow down and enjoy your coffee")) as c:
+            await c.get("https://t.test/")
+            return c.stats
+
+    assert asyncio.run(run())["rate_limited"] == 0

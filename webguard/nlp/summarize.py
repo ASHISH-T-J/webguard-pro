@@ -53,7 +53,7 @@ def executive_summary(target: str, findings: list[Finding], chains: list[dict] |
     real = [f for f in findings if f.severity >= Severity.LOW and f.check != "anomaly"]
     counts = Counter(f.severity.name for f in real)
     rating = _risk_rating(real)
-    parts = [f"WebGuard assessed {target}. The overall risk rating is **{rating}**."]
+    parts = [f"The assessment of {target} resulted in an overall risk rating of **{rating}**."]
     if not real:
         parts.append("No exploitable vulnerabilities were confirmed within the tested scope.")
     else:

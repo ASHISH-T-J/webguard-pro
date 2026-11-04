@@ -24,7 +24,7 @@ from webguard.engine import ScanEngine
 from webguard.ml.triage import TriageModel
 from webguard.models import Finding, Host
 from webguard.recon import tools
-from webguard.reporting import write_all
+from webguard.reporting import ReportOptions, write_all
 from webguard.scope import Scope
 from webguard.workflows.recon import ReconResult, run_recon, urls_for_host
 from webguard.workflows.redteam import prioritise
@@ -45,6 +45,7 @@ class HuntResult:
 async def hunt(domain: str, config: ScanConfig, scope: Scope, db: Database, out_dir: Path,
                formats: list[str], max_hosts: int = 25, use_nuclei: bool = True, use_tools: bool = True,
                content_discovery: bool = False, parallel_hosts: int = 4, screenshots: bool = True,
+               report_options: ReportOptions | None = None,
                transport: httpx.AsyncBaseTransport | None = None, on_finding: Callable[[Finding], None] | None = None,
                status: Callable[[str], None] = print) -> HuntResult:
     scan_id = db.start_scan(domain, "hunt")
@@ -108,7 +109,8 @@ async def hunt(domain: str, config: ScanConfig, scope: Scope, db: Database, out_
     if screenshots:
         from webguard.reporting import poc
 
-        n = await poc.capture(result.findings, config, scope, out_dir)
+        n = await poc.capture(result.findings, config, scope, out_dir,
+                              redact=report_options.redact if report_options else True)
         if n:
             status(f"Captured {n} PoC screenshot(s)")
     result.new_findings = db.save_findings(scan_id, domain, result.findings)
@@ -117,5 +119,5 @@ async def hunt(domain: str, config: ScanConfig, scope: Scope, db: Database, out_
     meta = {"scan_id": scan_id, "hosts": [h.to_dict() for h in recon.hosts], "ranking": [
         {k: v for k, v in r.items() if k != "host"} for r in ranking],
         "new_assets": recon.new_assets, "interesting_urls": recon.interesting_urls[:500]}
-    result.reports = write_all(domain, result.findings, out_dir, formats, meta)
+    result.reports = write_all(domain, result.findings, out_dir, formats, meta, report_options)
     return result

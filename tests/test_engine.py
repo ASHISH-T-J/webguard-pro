@@ -126,7 +126,7 @@ def test_assessment_analysis_outputs(scan_result):
     titles = {c["title"] for c in result.chains}
     assert "Administrative access: authentication bypass" in titles
     assert "Privilege escalation: forge JWTs with cracked signing secret" in titles
-    assert result.narrative["executive_summary"].startswith("WebGuard assessed")
+    assert result.narrative["executive_summary"].startswith("The assessment of")
     assert result.coverage["WSTG-INPV-05"] == "vulnerable" and result.coverage["WSTG-ATHN-04"] == "vulnerable"
     assert [t.phase for t in result.trace][:2] == ["recon", "recon"] and result.trace[-1].phase == "analysis"
     assert len(result.issues) <= len(result.findings)
@@ -197,6 +197,8 @@ def test_poc_screenshots_and_evidence(scan_result, tmp_path):
     assert any(f.check == "lfi" for f in by_kind.get("live-response", []))
     auth = next(f for f in result.findings if f.check == "auth")
     assert '"token"' in auth.context["http_response"]  # replayed request captured the real response
+    # PII / tokens are blurred on screenshots (JWT + e-mail in the auth-bypass response)
+    assert auth.context.get("poc_redactions", 0) >= 2
 
 
 def test_bypass_findings_name_the_technique_and_verify(scan_result):
