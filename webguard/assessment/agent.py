@@ -37,6 +37,8 @@ from webguard.crawler import Crawler, CrawlResult, normalize_url
 from webguard.detection.baseline import title as page_title
 from webguard.detection.checks import POINT_CHECKS, advanced, analyzers, dom, hunting, passive
 from webguard.detection.checks import host as host_checks
+from webguard.detection.checks import server as server_checks
+from webguard.detection.checks import tls as tls_checks
 from webguard.detection.context import ACTIVE_CHECK, ACTIVE_ENCODING, ACTIVE_VARIANT, Context
 from webguard.detection.encoding import DECODE, detect_encoding, variants_for
 from webguard.http import HttpClient, Resp
@@ -501,6 +503,11 @@ class AssessmentAgent:
         if phase == "config":
             for root in roots:
                 add("headers", root, "baseline hardening: security headers, CSP, HTTP methods", 3, 3, "headers")
+                add("server_config", root, "web server audit: software versions vs CVE/EOL data, directory "
+                    "listing, default pages, admin/debug consoles, advertised methods", 4.5, 45, "server")
+                if root.startswith("https://"):
+                    add("tls", root, "TLS audit: protocols, cipher suites, certificate, HSTS, HTTP->HTTPS redirect",
+                        5, 3, "tls")
                 add("exposure", root, "probe known sensitive files/admin interfaces (soft-404 aware) - historically "
                     "the highest-yield configuration test", 9, 70, "exposure")
                 # CORS matters where data is returned: JSON API responses first, one URL per path
@@ -691,6 +698,22 @@ class AssessmentAgent:
         elif a == "exposure":
             await host_checks.exposures(ctx, t)
             self._cover("exposure")
+        elif a == "server_config":
+            await server_checks.audit(ctx, t, self.res.pages)
+            self._cover("server")
+            self._cover("cve")
+        elif a == "tls":
+            survey = await tls_checks.audit(ctx, t)
+            if survey:
+                if survey.get("skipped"):
+                    self.res.facts.append(f"TLS handshake audit of {t} skipped: {survey['skipped']}")
+                elif survey.get("accepted"):
+                    self.res.facts.append(
+                        f"TLS {t}: accepts {', '.join(survey['accepted'])}"
+                        + (f"; weak suites: {', '.join(w[0] for w in survey['weak'])}" if survey["weak"] else "")
+                        + (f"; not testable from this client: {', '.join(survey['untested'])}"
+                           if survey["untested"] else ""))
+            self._cover("tls")
         elif a == "cors":
             await host_checks.cors(ctx, t)
             self._cover("cors")

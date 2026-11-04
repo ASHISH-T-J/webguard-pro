@@ -252,6 +252,31 @@ as e.g. *"SQL injection (boolean-based blind) - input filter bypassed with tampe
 defeatable blacklist is itself the vulnerability. Tamper chains are never used when a WAF / CDN challenge
 / rate limiter answered (those inputs stay NOT TESTED, see WAF policy). Use `--tamper a,b` to force a chain.
 
+### Web server configuration and TLS audit
+
+Runs in the configuration stage (checks `server` and `tls`; select with `--checks server,tls`). Every
+probe is read-only: ordinary GET/OPTIONS requests and TLS handshakes. Nothing is uploaded, changed or
+executed.
+
+| Area | What is checked | WSTG |
+|---|---|---|
+| Software inventory | product and version from `Server` / `X-Powered-By` / `X-Jenkins` / `kbn-version` headers, generator tags, footers and error pages (Apache, nginx, IIS, PHP, OpenSSL, Tomcat, WordPress, Drupal, Joomla, Confluence, Jira, Grafana, TeamCity, ...) matched against the CVE / end-of-life knowledge base (`webguard/data/cve/`, ~95 CVEs, KEV and RCE flagged) | INFO-02, CONF-01/02 |
+| Directory listing | root, common directories and every directory seen while crawling; MEDIUM when backups, keys or configs are listed | CONF-02 |
+| Default pages | Apache / nginx / IIS / Tomcat / lighttpd / Caddy install pages | CONF-02 |
+| Admin & debug consoles | Tomcat Manager, phpMyAdmin, Adminer, JBoss consoles, Werkzeug debugger, Symfony profiler, Solr, Druid, unfinished WordPress installer; login page = LOW, open console = HIGH | CONF-05 |
+| HTTP methods | write / WebDAV methods advertised in `OPTIONS` (reported, never exercised) | CONF-06 |
+| TLS protocols & ciphers | TLS 1.0 / 1.1 accepted; NULL, anonymous, EXPORT, RC4, 3DES and static-RSA suites accepted | CRYP-01 |
+| Certificate | expired / not yet valid / expiring within 30 days, self-signed, untrusted or incomplete chain, host name mismatch, RSA < 2048 bits, SHA-1 / MD5 signature | CRYP-01 |
+| HTTPS enforcement | plain-HTTP access without redirect; HSTS max-age under 180 days | CONF-07 |
+
+Version-based CVE matches are *potential* findings (FIRM confidence at most). When the banner carries a
+distribution patch tag (`Ubuntu`, `deb`, `el8`, ...) confidence drops to TENTATIVE, because distributions
+back-port fixes without changing the upstream version. Only TLS options the server *accepts* are
+reported: if this machine's TLS library cannot offer a legacy protocol or cipher, that item is recorded
+as not tested. TLS handshakes connect directly to the target, so they are skipped when `--proxy` is set
+(the HSTS and redirect checks still run through the proxy). Certificate details (key size, signature)
+need the optional `cryptography` package.
+
 ### Resilience
 
 Per-host adaptive rate control (AIMD: halve on 429/503/timeouts, recover gradually), `Retry-After`
@@ -532,7 +557,8 @@ webguard/
   nlp/                   tokenizer, naive Bayes, page & parameter classifiers, NL query, narratives
   analysis/              grep packs, root-cause clustering, attack chains, CVSS/risk
   detection/             baseline & similarity, anomaly ML, request context, tamper
-    checks/              sqli, xss, server_side (ssti/lfi/cmdi/ssrf), client_side (redirect/crlf),
+    checks/              server.py (server config audit), tls.py (TLS audit),
+                         sqli, xss, server_side (ssti/lfi/cmdi/ssrf), client_side (redirect/crlf),
                          advanced (xxe/nosqli/auth/host-header/403/idor/graphql), analyzers (jwt/csrf/
                          data exposure/deserialization/sri), dom (headless Chromium), host, passive, hunting
   crawler.py             async scope-aware crawler + JS tokenizer/endpoint miner
@@ -555,7 +581,7 @@ Extend detection without code: drop JSON files into a directory and pass `--sign
 
 ```bash
 pip install -e ".[all,dev]"
-pytest -q                       # 172 tests: e2e detection + safe twins, resilience/rate limits, context, agent, reporting/redaction, console/resume, NLP, CLI
+pytest -q                       # 179 tests: e2e detection + safe twins, server/TLS audit, resilience/rate limits, context, agent, reporting/redaction, console/resume, NLP, CLI
 ruff check webguard tests
 python tests/vulnapp.py         # run the vulnerable test app locally
 python benchmarks/juice_shop.py # benchmark against a running Juice Shop

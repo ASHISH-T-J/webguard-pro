@@ -21,7 +21,9 @@ dns = ["dnspython>=2.6"]
 socks = ["httpx[socks]>=0.27"]
 llm = ["anthropic>=2.4"]
 browser = ["playwright>=1.40"]
-all = ["numpy>=1.26", "scikit-learn>=1.4", "dnspython>=2.6", "httpx[socks]>=0.27", "anthropic>=2.4", "playwright>=1.40"]
+tls = ["cryptography>=42"]
+all = ["numpy>=1.26", "scikit-learn>=1.4", "dnspython>=2.6", "httpx[socks]>=0.27", "anthropic>=2.4", "playwright>=1.40",
+       "cryptography>=42"]
 dev = ["pytest>=8", "ruff>=0.5"]
 
 [project.scripts]

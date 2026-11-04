@@ -13,7 +13,7 @@ ALL_CHECKS = (
     # injection (per parameter)
     "sqli", "nosqli", "xss", "ssti", "lfi", "cmdi", "redirect", "crlf", "ssrf", "ldapi", "xpathi", "xinclude",
     # endpoint / host level
-    "xxe", "auth", "host_header", "access", "idor", "graphql", "cors", "headers", "exposure",
+    "xxe", "auth", "host_header", "access", "idor", "graphql", "cors", "headers", "exposure", "server", "tls",
     # passive analysis
     "disclosure", "secrets", "jwt", "csrf", "deserialization", "data_exposure", "js_analysis",
     # browser + hunting
