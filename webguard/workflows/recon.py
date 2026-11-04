@@ -69,6 +69,8 @@ async def run_recon(domain: str, config: ScanConfig, scope: Scope, db: Database 
             status(f"  {len(res.hosts)} live web services; checking subdomain takeover")
             res.findings += await active.takeover(client, sigdb, sorted(subs))
 
+    for f in res.findings:  # recon results are asset inventory: reported as collected (never masked)
+        f.context.setdefault("phase", "recon")
     if db is not None and scan_id is not None:
         res.new_assets["subdomain"] = db.upsert_assets(scan_id, domain, "subdomain",
                                                        [(s, {"ips": ips}) for s, ips in resolved.items()])

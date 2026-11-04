@@ -13,6 +13,7 @@ from collections.abc import Callable
 from typing import Any
 from urllib.parse import quote, urlencode
 
+from webguard import ui
 from webguard.config import ScanConfig
 from webguard.detection.baseline import Baseline
 from webguard.detection.encoding import Raw, Variant, encode_context
@@ -27,6 +28,8 @@ log = logging.getLogger("webguard.detect")
 ACTIVE_VARIANT: contextvars.ContextVar[Variant | None] = contextvars.ContextVar("webguard_variant", default=None)
 # value encoding of the point currently under test (base64/hex/url), recorded on findings for verification
 ACTIVE_ENCODING: contextvars.ContextVar[str] = contextvars.ContextVar("webguard_encoding", default="")
+# check (bug class) currently being tested in this task - shown in verbose payload output
+ACTIVE_CHECK: contextvars.ContextVar[str] = contextvars.ContextVar("webguard_check", default="")
 FILTER_HINT = re.compile(r"(?i)invalid (?:characters?|input|value|parameter|request|file ?name|path)|not allowed|"
                          r"illegal (?:characters?|input)|forbidden characters?|bad input|disallowed|"
                          r"hack(?:ing)? attempt|possible (?:attack|injection)|detected (?:sql|injection)|"
@@ -132,12 +135,18 @@ class Context:
             self.filter_signals[point.key] = self.filter_signals.get(point.key, 0) + 1
 
     # ------------------------------------------------------------------ requests
-    def _build(self, point: InjectionPoint, value: str) -> dict[str, Any]:
+    @staticmethod
+    def _wire_value(point: InjectionPoint, value: str) -> str:
+        """The value after the active tamper/variant and the parameter's own encoding (base64, hex, ...)."""
         variant = ACTIVE_VARIANT.get()
         if variant is not None and value != point.original:
             value = variant.transform(value)
         if point.encoding:  # encoded value context: the app decodes this parameter before using it
             value = encode_context(str(value), point.encoding)
+        return value
+
+    def _build(self, point: InjectionPoint, value: str) -> dict[str, Any]:
+        value = self._wire_value(point, value)
         method = point.method.upper()
         kw: dict[str, Any] = {"method": method, "url": point.url}
         in_query = point.location in ("query", "path") or (point.location == "form" and method == "GET")
@@ -161,6 +170,12 @@ class Context:
     async def send(self, point: InjectionPoint, value: str, *, timeout: float | None = None,
                    follow_redirects: bool = False) -> Resp | None:
         kw = self._build(point, value)
+        if ui.LEVEL >= 3 and str(value) != str(point.original):
+            variant = ACTIVE_VARIANT.get()
+            wire = self._wire_value(point, value)
+            ui.payload(ACTIVE_CHECK.get(), point.method.upper(), point.url, point.name, point.location, str(value),
+                       str(wire), variant.name if variant is not None else None, point.encoding or None,
+                       wire_exact=isinstance(wire, Raw))
         try:
             resp = await self.client.request(
                 kw.pop("method"), kw.pop("url"), timeout=timeout, follow_redirects=follow_redirects, **kw

@@ -19,6 +19,7 @@ local reasoner, **Claude** (Anthropic API) or any **local LLM via Ollama**.
 ## Contents
 
 - [Quick start](#quick-start)
+- [Console, progress and resume](#console-progress-and-resume)
 - [How an assessment runs](#how-an-assessment-runs)
 - [What it detects](#what-it-detects)
 - [AI / LLM reasoning engines](#ai--llm-reasoning-engines)
@@ -56,10 +57,59 @@ webguard assess https://app.example.com -H "Authorization: Bearer …" --cookie 
     --proxy http://127.0.0.1:8080 --rate 5
 ```
 
+New to security testing? `webguard wizard` asks a few plain-language questions (target, permission,
+goal, production or not, login, proxy, time limit), prints the equivalent command so you can learn the
+switches, and runs it. `webguard --help` and `webguard <command> --help` show usage examples.
+
 Core dependencies are only `httpx`, `beautifulsoup4` and `pyyaml`. Everything else is optional and
 degrades gracefully: no scikit-learn → robust z-score anomaly model; no Playwright → no DOM-XSS
 browser verification; no LLM → local reasoner. Docker: `docker build -t webguard . && docker run --rm
 -v "$PWD:/reports" webguard assess https://target`.
+
+---
+
+## Console, progress and resume
+
+```
+━━━ [stage 4/7] Input validation ━━━
+[05:19:12] [PAYLOAD] sqli · GET http://shop.test/data [data] (query)
+           raw     : 1001'
+           encoded : MTAwMSc%3D
+           value encoding: base64
+[HIGH] SQL injection (error-based, MySQL) (inside base64-encoded value)  (firm confidence)
+    URL       : http://shop.test/data
+    Parameter : data (query)
+    Payload   : 1001'
+    Encoded   : MTAwMSc%3D  (base64 value, then URL-encoded)
+    Evidence  : DBMS error triggered by payload: SQL syntax; check the manual ...
+[stage 4/7 Input validation] ███████░░░░░░░░░░░░░ 41/118 tests · 2210 req (96.1/s) · 1C 6H · 00:23 · inject:GET /search [query] q
+```
+
+- **Stages of testing**: 1 Reconnaissance & mapping · 2 Configuration · 3 Identity & sessions ·
+  4 Input validation · 5 Authorization & client-side · 6 Verification · 7 Analysis & reporting.
+- **Live progress line** (terminal only): stage, tests done/total, requests and rate, findings by
+  severity, elapsed time, current test. `--no-progress` turns it off.
+- **Colours**: CRITICAL / HIGH red, MEDIUM yellow, LOW blue, INFO green. `--no-color` or `NO_COLOR=1`
+  turns them off (automatic when output is redirected).
+- **Findings**: MEDIUM+ as a block (URL, parameter, payload, encoded payload, evidence, CWE/OWASP),
+  LOW/INFO on one line, then a severity-sorted table at the end.
+- **Verbosity** (`-v N`, like sqlmap; `-vv` / `-vvv` also work):
+
+| `-v` | Shows |
+|---|---|
+| 0 | findings, warnings and the summary only |
+| 1 | + stages and progress (default) |
+| 2 | + debug: each test as it starts, reasoner decisions, rate-control changes |
+| 3 | + every payload: bug class, method, URL, parameter and location, **raw** and **encoded** (wire) value, tamper/variant and value encoding |
+| 4 | + every HTTP request (method, URL, headers, body) |
+| 5 | + response status, size, time and headers |
+| 6 | + response bodies |
+
+- **Save and resume**: progress is saved after every round of tests and on Ctrl+C or a crash
+  (`<db dir>/sessions/`, or `--session-dir`). Running the **same command** again resumes: the
+  application is mapped again (fast, and it may have changed), completed tests are skipped, and the
+  findings confirmed earlier are restored and re-verified. A finished scan deletes its session;
+  `--fresh` (alias `--flush-session`) starts over. `hunt` keeps one session per host.
 
 ---
 
@@ -249,9 +299,10 @@ Images are embedded in the HTML report, linked from the Markdown submissions and
 `<output>/poc/`. Disable with `--no-screenshots`.
 
 Screenshots are clean evidence: banners state only what was observed and when (no tool branding).
-Before capture, **PII and secrets on the page are blurred**: e-mail addresses, Luhn-valid card numbers,
-SSNs, phone numbers, JWTs, password hashes, API keys, cookie/authorization header values and
-password/e-mail input fields. Field and header names stay readable so the evidence still makes sense.
+Before capture, **personal data on the page is blurred**: e-mail addresses, phone numbers, names,
+postal addresses, dates of birth, national IDs, Luhn-valid card numbers, IBANs / bank details, and
+personal form fields (by type, `autocomplete` or field name). Technical evidence (tokens, hashes, keys,
+headers, payloads) stays visible because it is the proof. Field names stay readable.
 
 ---
 
@@ -363,12 +414,20 @@ prefixes, excludes and a path deny-list (`/logout`, `/delete`, …).
 | `--report-style technical` | everything, including the reasoning trace, ML triage scores, reasoner, grep highlights and tool metadata |
 | `--report-author "ACME Security"` | "prepared by" line in the header (and SARIF driver name in client style) |
 | `--report-title "…"` | report title (default "Security Assessment Report") |
-| `--no-redact` | keep raw values (default: redact) |
+| `--no-redact` | keep personal data unmasked (default: mask) |
 
-By default every report format **redacts PII and secrets** in evidence, HTTP excerpts and narrative:
-e-mails become `a***@example.com`, card numbers `**** **** **** 4242`, hashes/JWTs/API keys keep only a
-short prefix (`eyJ…[redacted JWT]`), and cookie, authorization and password values become `[redacted]`.
-URLs, fingerprints, IP addresses, dates and versions are left intact, so findings stay reproducible.
+By default every report format **masks personal information only**:
+
+| Masked (personal) | Example | Not masked (technical evidence) |
+|---|---|---|
+| e-mail, phone | `a***@example.com`, `***-***1` | URLs, parameters, payloads |
+| names, postal address, date of birth (`firstName`, `address`, `dob`, ... fields) | `"lastName":"[redacted]"` | hashes, JWTs, API keys, cookies, headers |
+| card numbers (Luhn), IBAN, account / routing numbers, CVV | `**** **** **** 4242`, `DE** **** 3000` | IPs, hostnames, versions, dates |
+| SSN, passport, national / tax ID | `***-**-****` | fingerprints, CWE / OWASP references |
+
+**Recon results are never masked**: recon-phase findings and the recon inventory (hosts, titles,
+technologies, URLs) are reported exactly as collected. Only the assessment findings and the narrative
+are masked. **Terminal output is never masked**: it is the tester's own console.
 
 ---
 
@@ -446,12 +505,13 @@ diminishing returns for repeated test types - all visible in the reasoning trace
 | `webguard db scans\|findings\|assets\|new\|label` | Query history, label tp/fp |
 | `webguard ml train\|status` | Train / inspect the triage model |
 | `webguard tools` | External tools and signature database status |
-| `webguard wizard` | Interactive guided mode |
+| `webguard wizard` (or `webguard --wizard`) | Guided mode: plain-language questions, prints the equivalent command, then runs it |
 
 Common options: `--profile safe|standard|thorough`, `--scope`, `--subdomains`, `-H`, `--cookie`, `--proxy`, `--rate`, `-c`, `--timeout`,
 `--depth`, `--max-urls`, `--checks`/`--skip`, `--no-timing`, `--time-delay`, `--param-discovery`,
 `--oob`, `--tamper`, `--signatures`, `--wordlist`, `--no-discovery`, `--no-screenshots`, `-o`, `-f`, `--db`,
-`--report-style client|technical`, `--report-author`, `--report-title`, `--no-redact`, `--model`, `-v`.
+`--report-style client|technical`, `--report-author`, `--report-title`, `--no-redact`, `--model`,
+`-v 0-6`, `--no-color`, `--no-progress`, `--fresh`, `--session-dir`.
 
 Legacy entry points `python3 webguard.py -d example.com -m passive|active|vulnerability` and
 `python3 scanner.py -d …` still work (translated to the commands above).
@@ -462,7 +522,9 @@ Legacy entry points `python3 webguard.py -d example.com -m passive|active|vulner
 
 ```
 webguard/
-  cli.py                 command line
+  cli.py                 command line, help examples, guided wizard
+  ui.py                  console: colours, stages, live progress, -v 0-6 payload/HTTP tracing
+  session.py             save progress and resume interrupted scans
   engine.py              `scan` = agent in exhaustive mode
   assessment/            agent.py (plan→act→observe→verify loop, knowledge base, budget, adaptation)
                          methodology.py (phases, WSTG mapping, rules of engagement)
@@ -493,7 +555,7 @@ Extend detection without code: drop JSON files into a directory and pass `--sign
 
 ```bash
 pip install -e ".[all,dev]"
-pytest -q                       # 161 tests: e2e detection + safe twins, resilience/rate limits, context, agent, reporting/redaction, NLP, CLI
+pytest -q                       # 172 tests: e2e detection + safe twins, resilience/rate limits, context, agent, reporting/redaction, console/resume, NLP, CLI
 ruff check webguard tests
 python tests/vulnapp.py         # run the vulnerable test app locally
 python benchmarks/juice_shop.py # benchmark against a running Juice Shop

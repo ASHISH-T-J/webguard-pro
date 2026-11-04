@@ -31,6 +31,93 @@ from webguard.models import Severity
 from webguard.scope import Scope
 
 FORMATS = ("json", "html", "sarif", "md")
+FMT = argparse.RawDescriptionHelpFormatter
+
+MAIN_EXAMPLES = """\
+examples:
+  new to security testing? start the guided wizard:
+    webguard wizard
+
+  quick, production-safe scan of one site:
+    webguard scan https://shop.example.com --profile safe
+
+  full assessment with live progress, showing every payload (raw + encoded):
+    webguard assess https://shop.example.com -v 3
+
+  authenticated scan through Burp, time-boxed to 20 minutes:
+    webguard assess https://app.example.com --cookie session=abc123 \\
+        --proxy http://127.0.0.1:8080 --budget-minutes 20
+
+  bug bounty: recon -> rank subdomains -> scan the best 10 in parallel:
+    webguard hunt example.com --max-hosts 10 -H 'X-Bug-Bounty: yourname'
+
+  interrupted (Ctrl+C)? run the same command again to resume; --fresh starts over.
+
+verbosity (-v N, like sqlmap):
+  0 findings only · 1 stages & progress (default) · 2 debug · 3 payloads (raw + encoded, URL, parameter)
+  4 + HTTP requests · 5 + response headers · 6 + response bodies.  -vv / -vvv also work.
+
+severity colours: CRITICAL/HIGH red · MEDIUM yellow · LOW blue · INFO green
+
+Only test systems you own or are explicitly authorised to assess.
+"""
+
+EXAMPLES = {
+    "scan": """examples:
+  webguard scan https://shop.example.com
+  webguard scan https://shop.example.com --profile safe --no-timing
+  webguard scan -l targets.txt --checks sqli,xss,ssrf -o out -f html,sarif
+  webguard scan https://shop.example.com -v 3            # show every payload (raw + encoded)
+  webguard scan https://shop.example.com --fresh         # ignore the saved session, start over
+""",
+    "assess": """examples:
+  webguard assess https://shop.example.com
+  webguard assess https://shop.example.com --budget-minutes 30 --show-trace
+  webguard assess https://shop.example.com --llm claude          # Claude plans the tests (ANTHROPIC_API_KEY)
+  webguard assess https://app.example.com --cookie sid=abc -H 'Authorization: Bearer eyJ...'
+  webguard assess https://shop.example.com -v 4 --no-color > run.log
+""",
+    "recon": """examples:
+  webguard recon example.com
+  webguard recon example.com --passive        # public sources only, no traffic to the target
+""",
+    "hunt": """examples:
+  webguard hunt example.com
+  webguard hunt example.com --max-hosts 10 --parallel-hosts 4 --rate 20 -H 'X-Bug-Bounty: yourname'
+""",
+    "surface": """examples:
+  webguard surface example.com
+  webguard surface example.com --no-ports
+""",
+    "report": """examples:
+  webguard report 12 -f html,md --report-author "ACME Security"
+  webguard report 12 --report-style technical --min-severity MEDIUM
+""",
+    "grep": """examples:
+  webguard grep 12 --pack secrets
+  webguard grep 12 --regex 'AKIA[0-9A-Z]{16}' --in js
+""",
+    "ask": """examples:
+  webguard ask "high sql injection on the api"
+  webguard ask "what should I fix first?" --llm claude
+""",
+    "analyze": "examples:\n  webguard analyze 12\n",
+    "db": "examples:\n  webguard db scans\n  webguard db findings --scan 12\n  webguard db label 42 fp\n  webguard db new example.com\n",
+    "ml": "examples:\n  webguard ml status\n  webguard ml train\n",
+    "tools": "examples:\n  webguard tools\n",
+    "wizard": "examples:\n  webguard wizard\n  webguard --wizard\n",
+}
+
+
+def _verbosity_argv(argv: list[str]) -> list[str]:
+    """Accept -vv / -vvv (count) as well as sqlmap's -v N."""
+    out: list[str] = []
+    for a in argv:
+        if len(a) > 2 and a.startswith("-v") and set(a[1:]) == {"v"}:
+            out += ["-v", str(len(a) - 1)]  # -vv -> 2, -vvv -> 3
+        else:
+            out.append(a)
+    return out
 
 
 # ----------------------------------------------------------------------------- argument parsing
@@ -69,7 +156,15 @@ def _common(p: argparse.ArgumentParser) -> None:
     _report_args(g)
     g.add_argument("--db", default=str(DEFAULT_DB), help=f"SQLite database (default {DEFAULT_DB})")
     g.add_argument("--model", default=str(DEFAULT_MODEL), help="ML triage model path")
-    g.add_argument("-v", "--verbose", action="count", default=0)
+    g = p.add_argument_group("console & session")
+    g.add_argument("-v", "--verbose", type=int, nargs="?", const=2, default=1, metavar="N",
+                   help="verbosity 0-6 (default 1): 2 debug, 3 payloads raw+encoded, 4 HTTP requests, "
+                        "5 response headers, 6 response bodies")
+    g.add_argument("--no-color", action="store_true", help="disable coloured output")
+    g.add_argument("--no-progress", action="store_true", help="disable the live progress line")
+    g.add_argument("--fresh", "--flush-session", dest="fresh", action="store_true",
+                   help="ignore a saved session and start the scan over")
+    g.add_argument("--session-dir", help="where scan sessions are saved (default: next to the database)")
 
 
 def _report_args(g) -> None:
@@ -78,7 +173,8 @@ def _report_args(g) -> None:
     g.add_argument("--report-author", help="'Prepared by' line, e.g. your name or company")
     g.add_argument("--report-title", default="Security Assessment Report")
     g.add_argument("--no-redact", action="store_true",
-                   help="do not mask PII/secrets in reports and screenshots (internal use only)")
+                   help="do not mask personal data (names, addresses, e-mail, phone, financial) in reports "
+                        "and screenshots")
 
 
 def _report_options(args):
@@ -90,9 +186,18 @@ def _report_options(args):
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="webguard", description="WebGuard Pro - recon, vulnerability detection and hunting")
+    p = argparse.ArgumentParser(prog="webguard", formatter_class=FMT, epilog=MAIN_EXAMPLES,
+                                description="WebGuard Pro - web application security assessment: recon, "
+                                            "methodology-driven testing, verification and reporting")
     p.add_argument("--version", action="version", version=f"webguard {__version__}")
-    sub = p.add_subparsers(dest="cmd", required=True)
+    p.add_argument("--wizard", action="store_true", help="guided mode for non-technical users (same as 'wizard')")
+    sub = p.add_subparsers(dest="cmd", metavar="<command>", title="commands")
+    _add = sub.add_parser
+
+    def add_parser(name: str, **kw):
+        return _add(name, formatter_class=FMT, epilog=EXAMPLES.get(name), description=kw.get("help"), **kw)
+
+    sub.add_parser = add_parser  # every sub-command gets a description and usage examples
 
     s = sub.add_parser("scan", help="scan a web application")
     s.add_argument("targets", nargs="*", help="URL(s) or host(s)")
@@ -190,7 +295,8 @@ def build_parser() -> argparse.ArgumentParser:
     an.add_argument("--db", default=str(DEFAULT_DB))
 
     sub.add_parser("tools", help="show external tools and signature database status")
-    sub.add_parser("wizard", help="interactive guided scan")
+    w = sub.add_parser("wizard", help="guided mode: answers a few questions, explains and runs the right command")
+    w.add_argument("--batch", action="store_true", help="accept the default answer for every question")
     return p
 
 
@@ -220,7 +326,7 @@ def make_config(args: argparse.Namespace) -> ScanConfig:
         concurrency=args.concurrency, rate_limit=args.rate, timeout=args.timeout, max_depth=args.depth,
         max_urls=args.max_urls, proxy=args.proxy, headers=headers, cookies=cookies, checks=checks,
         time_delay=args.time_delay, timing_checks=not args.no_timing, param_discovery=args.param_discovery,
-        oob_domain=args.oob, tamper=tamper, db_path=Path(args.db), model_path=Path(args.model), verbose=args.verbose,
+        oob_domain=args.oob, tamper=tamper, db_path=Path(args.db), model_path=Path(args.model), verbose=args.verbose or 0,
         **({"discovery_wordlist": None} if args.no_discovery else
            {"discovery_wordlist": Path(args.wordlist), "wordlist": Path(args.wordlist)} if args.wordlist else {}),
     ), args.profile, explicit_wordlist=bool(args.wordlist) or args.no_discovery)
@@ -243,6 +349,30 @@ def _formats(spec: str) -> list[str]:
     return fmts
 
 
+# ----------------------------------------------------------------------------- sessions & progress
+
+def _session(args, cfg: ScanConfig, target: str, mode: str, extra: str = ""):
+    """Open (or resume) the saved session for this exact scan."""
+    from webguard.session import Session
+
+    directory = Path(args.session_dir) if getattr(args, "session_dir", None) else Path(args.db).parent / "sessions"
+    selection = f"{','.join(cfg.checks)}|{getattr(args, 'profile', '')}|{extra}"
+    sess = Session.open(directory, target, mode, selection, fresh=getattr(args, "fresh", False))
+    if sess.resumed:
+        ui.status(ui.c(f"Resuming the previous {mode} of {target}: {sess.describe()}", "cyan"))
+        ui.status("  (use --fresh to discard the saved session and start over)")
+        for f in sess.restored_findings():
+            ui.print_finding(f, resumed=True)
+    return sess
+
+
+def _progress(args, source) -> ui.Progress:
+    progress = ui.Progress(source)
+    if getattr(args, "no_progress", False):
+        progress.enabled = False
+    return progress
+
+
 # ----------------------------------------------------------------------------- commands
 
 async def cmd_scan(args: argparse.Namespace) -> int:
@@ -262,9 +392,13 @@ async def cmd_scan(args: argparse.Namespace) -> int:
     for target in targets:
         scope = make_scope(args, target)
         ui.status(f"Scanning {ui.c(target, 'bold')}")
-        engine = ScanEngine(cfg, scope, sigdb, on_finding=ui.print_finding, on_status=ui.status)
+        sess = _session(args, cfg, target, "scan")
+        engine = ScanEngine(cfg, scope, sigdb, on_finding=ui.print_finding, on_status=ui.status, checkpoint=sess,
+                            on_stage=ui.stage)
         scan_id = db.start_scan(target, "scan")
-        res = await engine.scan(target)
+        with _progress(args, engine.progress):
+            res = await engine.scan(target)
+        sess.finish()
         await _screenshots(args, cfg, scope, res.findings)
         new = _persist(db, scan_id, target, res)
         paths = write_all(target, res.findings, Path(args.output), _formats(args.format), {"scan_id": scan_id, **res.meta()},
@@ -305,12 +439,12 @@ def _persist(db: Database, scan_id: int, target: str, res) -> list:
 
 
 def _print_trace(step) -> None:
-    print(ui.c(f"\n  ▸ step {step.step} [{step.phase}] ({step.engine})", "bold"))
-    print("    " + ui.c("thought: ", "cyan") + step.thought[:600])
+    ui.out(ui.c(f"\n  ▸ step {step.step} [{step.phase}] ({step.engine})", "bold"))
+    ui.out("    " + ui.c("thought: ", "cyan") + step.thought[:600])
     if step.actions:
         acts = ", ".join(step.actions[:6]) + (f" (+{len(step.actions) - 6})" if len(step.actions) > 6 else "")
-        print("    " + ui.c("actions: ", "cyan") + acts[:400])
-    print("    " + ui.c("observed: ", "cyan") + step.observation[:600], flush=True)
+        ui.out("    " + ui.c("actions: ", "cyan") + acts[:400])
+    ui.out("    " + ui.c("observed: ", "cyan") + step.observation[:600])
 
 
 async def cmd_assess(args: argparse.Namespace) -> int:
@@ -329,16 +463,20 @@ async def cmd_assess(args: argparse.Namespace) -> int:
         raise SystemExit("the claude engine needs the Anthropic SDK: pip install 'webguard-pro[llm]'") from None
     except ValueError as exc:
         raise SystemExit(str(exc)) from None
-    print(ui.c("Rules of engagement", "bold"))
+    ui.out(ui.c("Rules of engagement", "bold"))
     for rule in RULES_OF_ENGAGEMENT:
-        print("  - " + rule)
+        ui.out("  - " + rule)
     ui.status(f"Assessing {ui.c(args.target, 'bold')} with the {reasoner.name} reasoning engine")
     db = Database(cfg.db_path)
+    sess = _session(args, cfg, args.target, "assess", reasoner.name)
     scan_id = db.start_scan(args.target, "assess")
     agent = AssessmentAgent(cfg, scope, reasoner, SignatureDB(args.signatures), on_finding=ui.print_finding,
                             on_status=ui.status, on_trace=_print_trace if args.show_trace else None,
-                            budget_requests=args.budget_requests, budget_minutes=args.budget_minutes)
-    res = await agent.run(args.target)
+                            budget_requests=args.budget_requests, budget_minutes=args.budget_minutes,
+                            checkpoint=sess, on_stage=ui.stage)
+    with _progress(args, agent.progress):
+        res = await agent.run(args.target)
+    sess.finish()
     await _screenshots(args, cfg, scope, res.findings)
     new = _persist(db, scan_id, args.target, res)
     paths = write_all(args.target, res.findings, Path(args.output), _formats(args.format), {"scan_id": scan_id, **res.meta()},
@@ -348,7 +486,8 @@ async def cmd_assess(args: argparse.Namespace) -> int:
     if res.chains:
         print(ui.c("\nAttack chains", "bold"))
         for ch in res.chains:
-            print(f"  {ui.c(ch['severity'], ui.SEV[ch['severity']])} {ch['title']}\n      {ui.c(ch['steps'], 'dim')}")
+            print(f"  {ui.sev_tag(ch['severity'])} {ui.c(ch['title'], ui.SEV_TEXT[ch['severity']])}\n"
+                  f"      {ui.c(ch['steps'], 'dim')}")
     tested = sum(1 for v in res.coverage.values() if v != "not tested")
     print(ui.c(f"\nOWASP WSTG coverage: {tested}/{len(res.coverage)} areas", "bold"))
     _summary(res.findings, new, res.stats, paths, scan_id)
@@ -486,7 +625,8 @@ async def cmd_hunt(args: argparse.Namespace) -> int:
                      use_nuclei=not args.no_nuclei, use_tools=not args.no_tools,
                      content_discovery=args.content_discovery, parallel_hosts=args.parallel_hosts,
                      screenshots=not args.no_screenshots, report_options=_report_options(args), on_finding=ui.print_finding,
-                     status=ui.status)
+                     status=ui.status, session_dir=None if args.fresh else (
+                         Path(args.session_dir) if args.session_dir else Path(args.db).parent / "sessions"))
     print(ui.c("\nTop targets by attack-surface score:", "bold"))
     for r in res.ranking[:10]:
         print(f"  {r['score']:>5}  {r['url']}  {ui.c('; '.join(r['reasons']), 'dim')}")
@@ -556,7 +696,7 @@ def cmd_db(args: argparse.Namespace) -> int:
             sev = Severity(r["severity"]).name
             label = f" [{r['label']}]" if r["label"] else ""
             ml = f" ml={r['ml_score']:.2f}" if r["ml_score"] is not None else ""
-            print(f"{r['id']:>6}  {ui.c(f'{sev:<8}', ui.SEV[sev])} {r['title']}  {ui.c(r['url'], 'dim')} "
+            print(f"{r['id']:>6}  {ui.sev_tag(sev)} {ui.c(r['title'], ui.SEV_TEXT[sev])}  {ui.c(r['url'], 'dim')} "
                   f"{r['parameter'] or ''}{ml}{label}")
     elif args.dbcmd == "label":
         if not db.label(args.finding_id, args.label, args.note):
@@ -623,44 +763,124 @@ def cmd_tools() -> int:
     return 0
 
 
-def cmd_wizard() -> int:
-    ui.banner()
-    target = input("Target URL or domain: ").strip()
+WIZARD_MODES = {
+    "1": ("Quick safe check", "light, production-friendly tests (recommended for live sites)", ["scan", "--profile", "safe"]),
+    "2": ("Full vulnerability scan", "every applicable test, the most thorough result", ["scan"]),
+    "3": ("Smart assessment", "the most important tests first; can be time-boxed", ["assess"]),
+    "4": ("Bug bounty hunt", "find subdomains, rank them and scan the most promising", ["hunt"]),
+    "5": ("Recon only", "map subdomains, hosts and technologies - no attacks", ["recon"]),
+}
+
+
+def wizard_argv(ask) -> list[str] | None:
+    """Ask plain-language questions and build the equivalent command line (``ask(question, default)``)."""
+    def yes(q: str, default: bool) -> bool:
+        a = ask(f"{q} [{'Y/n' if default else 'y/N'}] ", "y" if default else "n").strip().lower()
+        return (a or ("y" if default else "n")).startswith("y")
+
+    target = ask("Website or domain to test (e.g. https://shop.example.com): ", "").strip()
     if not target:
-        return 1
-    mode = input("Mode [scan/recon/hunt/surface] (scan): ").strip() or "scan"
-    if input("Do you have written authorisation to test this target? [y/N]: ").strip().lower() != "y":
-        ui.warn("Aborting: authorisation is required.")
-        return 1
-    argv = [mode, target]
-    if mode == "scan" and input("Include subdomains in scope? [y/N]: ").strip().lower() == "y":
-        argv.append("--subdomains")
-    if input("Fast mode (skip time-based checks)? [Y/n]: ").strip().lower() != "n":
-        argv.append("--no-timing")
-    proxy = input("Proxy (blank for none, e.g. http://127.0.0.1:8080): ").strip()
+        ui.warn("No target given.")
+        return None
+    if not yes("Do you own this website or have written permission to test it?", False):
+        ui.warn("Stopping: you need the owner's permission before testing a website.")
+        return None
+    ui.out(ui.c("\nWhat would you like to do?", "bold"))
+    for k, (name, desc, _) in WIZARD_MODES.items():
+        ui.out(f"  [{k}] {ui.c(name, 'bold')} - {desc}")
+    choice = ask("Choose 1-5 [1]: ", "1").strip() or "1"
+    if choice not in WIZARD_MODES:
+        choice = "1"
+    argv = [*WIZARD_MODES[choice][2], target]
+    if argv[0] in ("hunt", "recon") and "://" in target:
+        argv[-1] = target.split("://", 1)[1].split("/")[0]
+    if argv[0] in ("scan", "assess") and choice != "1":
+        if yes("Is this a live production website (real customers)?", True):
+            argv += ["--profile", "safe"]
+    if argv[0] != "recon":
+        cookie = ask("If the test needs a login, paste a session cookie as name=value (Enter to skip): ", "").strip()
+        if cookie and "=" in cookie:
+            argv += ["--cookie", cookie]
+        token = ask("Authorization header value, e.g. 'Bearer eyJ...' (Enter to skip): ", "").strip()
+        if token:
+            argv += ["-H", f"Authorization: {token}"]
+    if argv[0] == "assess":
+        minutes = ask("Maximum test duration in minutes (Enter for no limit): ", "").strip()
+        if minutes.replace(".", "", 1).isdigit():
+            argv += ["--budget-minutes", minutes]
+    if argv[0] == "hunt":
+        bb = ask("Bug bounty programme header, e.g. 'X-Bug-Bounty: yourname' (Enter to skip): ", "").strip()
+        if ":" in bb:
+            argv += ["-H", bb]
+    proxy = ask("Send traffic through a proxy such as Burp, e.g. http://127.0.0.1:8080 (Enter to skip): ", "").strip()
     if proxy:
         argv += ["--proxy", proxy]
+    if argv[0] != "recon":
+        if not yes("Include slower time-based tests (more thorough)?", False):
+            argv.append("--no-timing")
+        author = ask("Your name or company for the report (Enter to skip): ", "").strip()
+        if author:
+            argv += ["--report-author", author]
+        if yes("Show each payload as it is tested (raw and encoded)?", False):
+            argv += ["-v", "3"]
+    return argv
+
+
+def cmd_wizard(batch: bool = False) -> int:
+    import shlex
+
+    ui.banner()
+    ui.out(ui.c("Guided mode", "bold") + " - answer a few questions; press Enter to accept the [default].\n")
+
+    def ask(question: str, default: str) -> str:
+        if batch:
+            ui.out(f"{question}{default}")
+            return default
+        return input(ui.c("[?] ", "cyan") + question)
+
+    try:
+        argv = wizard_argv(ask)
+    except EOFError:
+        return 1
+    if not argv:
+        return 1
+    ui.out(ui.c("\nEquivalent command (use it directly next time):", "bold"))
+    ui.out("  webguard " + " ".join(shlex.quote(a) for a in argv) + "\n")
+    if not batch and input(ui.c("[?] ", "cyan") + "Start now? [Y/n] ").strip().lower().startswith("n"):
+        return 0
     return main(argv)
 
 
 def _summary(findings, new, stats, paths, scan_id) -> None:
-    from collections import Counter
-
-    counts = Counter(f.severity.name for f in findings)
-    line = "  ".join(ui.c(f"{s.name}:{counts.get(s.name, 0)}", ui.SEV[s.name]) for s in sorted(Severity, reverse=True))
-    print("\n" + ui.c("Summary ", "bold") + line + f"  (new: {len(new)}, scan id {scan_id})")
+    ui.findings_table(findings)
+    ui.out("\n" + ui.c("Summary ", "bold") + ui.severity_counts(findings) + f"  (new: {len(new)}, scan id {scan_id})")
     if stats:
-        print(ui.c(f"  {stats.get('requests', 0)} requests in {stats.get('duration_s', '?')}s", "dim"))
+        ui.out(ui.c(f"  {stats.get('requests', 0)} requests in {stats.get('duration_s', '?')}s", "dim"))
     for p in paths:
         ui.status(f"Report: {p}")
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    level = logging.DEBUG if getattr(args, "verbose", 0) >= 2 else logging.WARNING
-    logging.basicConfig(level=level, format="%(levelname)s %(name)s: %(message)s")
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    argv = _verbosity_argv(list(sys.argv[1:] if argv is None else argv))
+    parser = build_parser()
+    if not argv:
+        parser.print_help()
+        return 0
+    args = parser.parse_args(argv)
+    if args.wizard and not args.cmd:
+        return cmd_wizard()
+    if not args.cmd:
+        parser.print_help()
+        return 0
+    verbose = getattr(args, "verbose", 1)
+    ui.set_level(1 if verbose is None else verbose)
+    if getattr(args, "no_color", False):
+        ui.set_color(False)
+    root = logging.getLogger()
+    if not any(isinstance(h, ui.LogHandler) for h in root.handlers):
+        root.addHandler(ui.LogHandler())
+    root.setLevel(logging.WARNING)  # third-party libraries: warnings only
+    logging.getLogger("webguard").setLevel(logging.DEBUG if ui.LEVEL >= 2 else logging.WARNING)
     try:
         if args.cmd in ("scan", "recon", "hunt", "surface", "assess"):
             ui.banner()
@@ -682,9 +902,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "tools":
             return cmd_tools()
         if args.cmd == "wizard":
-            return cmd_wizard()
+            return cmd_wizard(args.batch)
     except KeyboardInterrupt:
-        ui.warn("interrupted")
+        ui.warn("interrupted by user")
+        if args.cmd in ("scan", "assess", "hunt"):
+            ui.status("progress saved - run the same command again to resume where it stopped (--fresh to start over)")
         return 130
     return 0
 

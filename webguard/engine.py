@@ -15,6 +15,7 @@ from webguard.assessment.agent import AssessmentAgent, AssessmentResult, injecti
 from webguard.config import ScanConfig
 from webguard.models import Finding, Host
 from webguard.scope import Scope
+from webguard.session import Session
 from webguard.signatures import SignatureDB
 
 ScanResult = AssessmentResult
@@ -25,9 +26,14 @@ class ScanEngine:
     def __init__(self, config: ScanConfig, scope: Scope, sigdb: SignatureDB | None = None,
                  transport: httpx.AsyncBaseTransport | None = None,
                  on_finding: Callable[[Finding], None] | None = None,
-                 on_status: Callable[[str], None] | None = None) -> None:
+                 on_status: Callable[[str], None] | None = None, checkpoint: Session | None = None,
+                 on_stage: Callable[[int, int, str], None] | None = None) -> None:
         self.agent = AssessmentAgent(config, scope, LocalReasoner(exhaustive=True), sigdb, transport,
-                                     on_finding=on_finding, on_status=on_status)
+                                     on_finding=on_finding, on_status=on_status, checkpoint=checkpoint,
+                                     on_stage=on_stage)
+
+    def progress(self) -> dict:
+        return self.agent.progress()
 
     async def scan(self, target: str, extra_urls: list[str] = (), hosts: list[Host] | None = None) -> ScanResult:
         return await self.agent.run(target, list(extra_urls), hosts)

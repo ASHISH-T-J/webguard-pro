@@ -197,8 +197,8 @@ def test_poc_screenshots_and_evidence(scan_result, tmp_path):
     assert any(f.check == "lfi" for f in by_kind.get("live-response", []))
     auth = next(f for f in result.findings if f.check == "auth")
     assert '"token"' in auth.context["http_response"]  # replayed request captured the real response
-    # PII / tokens are blurred on screenshots (JWT + e-mail in the auth-bypass response)
-    assert auth.context.get("poc_redactions", 0) >= 2
+    # personal data is blurred on screenshots (the e-mail in the auth-bypass response)
+    assert auth.context.get("poc_redactions", 0) >= 1
 
 
 def test_bypass_findings_name_the_technique_and_verify(scan_result):

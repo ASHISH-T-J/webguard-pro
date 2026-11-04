@@ -27,6 +27,7 @@ from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 import httpx
 
+from webguard import ui
 from webguard.ai.reasoner import Candidate, LocalReasoner
 from webguard.analysis import correlate
 from webguard.analysis.grep import grep
@@ -36,7 +37,7 @@ from webguard.crawler import Crawler, CrawlResult, normalize_url
 from webguard.detection.baseline import title as page_title
 from webguard.detection.checks import POINT_CHECKS, advanced, analyzers, dom, hunting, passive
 from webguard.detection.checks import host as host_checks
-from webguard.detection.context import ACTIVE_ENCODING, ACTIVE_VARIANT, Context
+from webguard.detection.context import ACTIVE_CHECK, ACTIVE_ENCODING, ACTIVE_VARIANT, Context
 from webguard.detection.encoding import DECODE, detect_encoding, variants_for
 from webguard.http import HttpClient, Resp
 from webguard.ml.triage import TriageModel
@@ -45,6 +46,7 @@ from webguard.nlp.models import PageInfo, classify_page, classify_param, hypothe
 from webguard.recon import js_analysis, openapi
 from webguard.recon.active import probe
 from webguard.scope import Scope
+from webguard.session import Session
 from webguard.signatures import SignatureDB, default_db
 
 log = logging.getLogger("webguard.agent")
@@ -162,7 +164,8 @@ class AssessmentAgent:
                  sigdb: SignatureDB | None = None, transport: httpx.AsyncBaseTransport | None = None,
                  on_finding: Callable[[Finding], None] | None = None, on_status: Callable[[str], None] | None = None,
                  on_trace: Callable[[TraceStep], None] | None = None, budget_requests: int | None = None,
-                 budget_minutes: float | None = None, per_step: int = 25) -> None:
+                 budget_minutes: float | None = None, per_step: int = 25, checkpoint: Session | None = None,
+                 on_stage: Callable[[int, int, str], None] | None = None) -> None:
         self.config = config
         self.scope = scope
         self.reasoner = reasoner or LocalReasoner()
@@ -174,6 +177,8 @@ class AssessmentAgent:
         self.budget_requests = budget_requests
         self.budget_minutes = budget_minutes
         self.per_step = per_step
+        self.checkpoint = checkpoint
+        self.on_stage = on_stage or (lambda i, n, name: self.on_status(f"stage {i}/{n}: {name}"))
         self.model = TriageModel.load(config.model_path)
 
     # ------------------------------------------------------------------ public API
@@ -188,28 +193,71 @@ class AssessmentAgent:
         self._client_params: dict[str, set[str]] = {}
         self._seen_status: dict[str, int] = {}
         self._t0 = time.time()
+        self._cur_phase = "recon"
+        self._p_done = self._p_total = 0
+        self._current = ""
+        self._prior_requests = 0
+        completed = False
         async with HttpClient(self.config, self.scope, self.transport) as client:
             self.client = client
             self.ctx = Context(client, self.config, self.sigdb, self._report)
+            if self.checkpoint is not None and self.checkpoint.resumed:
+                self._restore(self.checkpoint)
             try:
+                self.on_stage(1, self.stages, PHASES[0][1])
                 await self._recon(target, list(extra_urls), hosts)
                 self._recon_used = client.stats["requests"]
                 if self.res.hosts:
-                    for phase, name in PHASES[1:]:
+                    for i, (phase, name) in enumerate(PHASES[1:], start=2):
+                        self.on_stage(i, self.stages, name)
                         await self._phase(phase, name)
+                completed = True
             finally:
+                if self.checkpoint is not None and not completed:
+                    self._save_checkpoint()  # interrupted / crashed: keep what was done for --resume
                 self.res.oob = self.ctx.oob_log
                 self.res.stats.update(client.stats)
                 self.res.resilience = client.resilience_report()
                 self.res.obstructed = {k: sorted(v)[:50] for k, v in self.ctx.obstructed.items()}
+        self._cur_phase = "analysis"
+        self.on_stage(self.stages, self.stages, "Analysis & reporting")
         self._analyse()
         self.res.narrative = await self.reasoner.narrate(target, self.res.findings, self.res.chains, self.res.coverage)
         self.res.stats["duration_s"] = round(time.time() - self.res.started, 1)
         self.res.stats["findings"] = len(self.res.findings)
         return self.res
 
+    # ------------------------------------------------------------------ progress & sessions
+    stages = len(PHASES) + 1  # methodology phases + analysis & reporting
+
+    def progress(self) -> dict:
+        """Live counters for the terminal progress line."""
+        client = getattr(self, "client", None)
+        return {"done": self._p_done, "total": self._p_total, "current": self._current,
+                "requests": (client.stats["requests"] if client else 0) + self._prior_requests}
+
+    def _restore(self, session: Session) -> None:
+        """Resume: skip completed tests and keep the findings confirmed before the interruption."""
+        self._done |= session.done
+        self._prior_requests = session.requests
+        for f in session.restored_findings():
+            self.ctx.findings.setdefault(f.fingerprint, f)
+            for wid in CHECK_WSTG.get(f.check.split(":")[0], []):
+                self.res.coverage[wid] = "vulnerable"
+        self.res.facts.append(f"Resumed from saved session: {session.describe()}")
+
+    def _save_checkpoint(self) -> None:
+        if self.checkpoint is None or not hasattr(self, "ctx"):
+            return
+        try:
+            self.checkpoint.save(self._done, list(self.ctx.findings.values()), self._cur_phase,
+                                 self.client.stats["requests"] + self._prior_requests)
+        except OSError as exc:
+            log.warning("could not save session %s: %s", self.checkpoint.path, exc)
+
     # ------------------------------------------------------------------ helpers
     def _report(self, f: Finding) -> None:
+        f.context.setdefault("phase", self._cur_phase)
         for wid in CHECK_WSTG.get(f.check.split(":")[0], []):
             self.res.coverage[wid] = "vulnerable"
         if self.on_finding:
@@ -557,7 +605,8 @@ class AssessmentAgent:
         if self._budget_left() <= 0 and phase != "verify":
             self._trace(phase, f"Skipping {name}: budget exhausted.", [], "coverage partial")
             return
-        self.on_status(f"[{phase}] {name}")
+        self._cur_phase = phase
+        self._p_done = self._p_total = 0
         phase_start = self.client.stats["requests"]
         cap = None
         if self.budget_requests:
@@ -581,6 +630,9 @@ class AssessmentAgent:
                 break
             before = set(self.ctx.findings)
             req_before = self.client.stats["requests"]
+            self._p_total += len(chosen)
+            ui.debug(f"{name}: {len(chosen)} test(s) selected by the {decision.engine} reasoner"
+                     + (f" - {decision.thought[:160]}" if decision.thought else ""))
             # with a budget, fewer tests in flight so the highest-ranked ones complete before it runs out
             width = 4 if (self.budget_requests or self.budget_minutes) else max(2, self.config.concurrency // 2)
             sem = asyncio.Semaphore(width)
@@ -594,15 +646,21 @@ class AssessmentAgent:
                         skipped.append(c.id)  # does not fit this phase's share of the budget
                         self._done.add(c.id)
                         return
-                    self._done.add(c.id)
+                    self._current = c.id
+                    ui.debug(f"testing {c.id}")
                     try:
                         await self._execute(c)
                     except Exception as exc:  # one broken test must not stop the assessment
                         log.debug("action %s failed: %s", c.id, exc, exc_info=True)
+                    else:
+                        self._done.add(c.id)  # only completed tests are skipped on resume
+                    finally:
+                        self._p_done += 1
 
             await asyncio.gather(*(run(c) for c in chosen))
             for c in chosen:
                 self._done.add(c.id)
+            self._save_checkpoint()
             new = [self.ctx.findings[k] for k in set(self.ctx.findings) - before]
             obs = (f"{len(chosen)} test(s), {self.client.stats['requests'] - req_before} requests; "
                    + (f"{len(new)} new finding(s): " + "; ".join(f"{f.severity.name} {f.title} @ {urlsplit(f.url).path}"
@@ -685,6 +743,8 @@ class AssessmentAgent:
             for check in order:
                 if self._budget_left() <= 0:
                     break  # stop between checks, not only between actions
+                ACTIVE_CHECK.set(check)
+                ui.debug(f"  {check} on {p.method} {p.url} [{p.name}] ({p.location})")
                 if check == "anomaly" and any(f.parameter == p.name and f.url == p.url for f in ctx.findings.values()):
                     continue
                 try:

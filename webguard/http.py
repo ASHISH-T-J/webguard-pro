@@ -31,6 +31,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from webguard import ui
 from webguard.config import ScanConfig
 from webguard.scope import Scope
 
@@ -199,6 +200,7 @@ class HostState:
     def note(self, text: str) -> None:
         if len(self.adjustments) < 50:
             self.adjustments.append(f"{time.strftime('%H:%M:%S')} {text}")
+        ui.debug(f"rate control: {text}")
 
     def pause(self, seconds: float, reason: str) -> None:
         """Pause ALL requests to this host (not just the one that hit the limit)."""
@@ -503,6 +505,8 @@ class HttpClient:
                     return None
 
             code = resp.status_code
+            if ui.LEVEL >= 4:
+                ui.http_exchange(resp.request, code, resp.headers, text, elapsed)
             st.observe_rate_headers(*parse_rate_headers(resp.headers))
             soft_limit = len(text) < 5000 and (
                 (code in (403, 503) and _SOFT_LIMIT.search(text) is not None)

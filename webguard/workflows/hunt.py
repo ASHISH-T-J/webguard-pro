@@ -26,6 +26,7 @@ from webguard.models import Finding, Host
 from webguard.recon import tools
 from webguard.reporting import ReportOptions, write_all
 from webguard.scope import Scope
+from webguard.session import Session
 from webguard.workflows.recon import ReconResult, run_recon, urls_for_host
 from webguard.workflows.redteam import prioritise
 
@@ -45,7 +46,7 @@ class HuntResult:
 async def hunt(domain: str, config: ScanConfig, scope: Scope, db: Database, out_dir: Path,
                formats: list[str], max_hosts: int = 25, use_nuclei: bool = True, use_tools: bool = True,
                content_discovery: bool = False, parallel_hosts: int = 4, screenshots: bool = True,
-               report_options: ReportOptions | None = None,
+               report_options: ReportOptions | None = None, session_dir: Path | None = None,
                transport: httpx.AsyncBaseTransport | None = None, on_finding: Callable[[Finding], None] | None = None,
                status: Callable[[str], None] = print) -> HuntResult:
     scan_id = db.start_scan(domain, "hunt")
@@ -81,14 +82,21 @@ async def hunt(domain: str, config: ScanConfig, scope: Scope, db: Database, out_
     async def scan_host(host: Host) -> None:
         async with sem:
             status(f"── {host.url}")
+            # one resumable session per host: an interrupted hunt skips hosts/tests already completed
+            sess = Session.open(session_dir, host.url, "hunt", ",".join(per_host.checks)) if session_dir else None
+            if sess is not None and sess.resumed:
+                status(f"[{host.url}] resuming: {sess.describe()}")
             engine = ScanEngine(per_host, scope, transport=transport, on_finding=on_finding,
-                                on_status=lambda m, h=host.url: status(f"[{h}] {m}"))
+                                on_status=lambda m, h=host.url: status(f"[{h}] {m}"), checkpoint=sess,
+                                on_stage=lambda i, n, name, h=host.url: status(f"[{h}] stage {i}/{n}: {name}"))
             extra = (urls_for_host(discovered, host.url) + urls_for_host(recon.historical_urls, host.url))[:500]
             try:
                 res = await engine.scan(host.url, extra_urls=extra, hosts=[host])
             except Exception as exc:  # one broken host must not abort the hunt
                 status(f"   {host.url} failed: {type(exc).__name__}: {exc}")
                 return
+            if sess is not None:
+                sess.finish()
             result.findings.extend(res.findings)
             result.host_results[host.url] = res
             db.upsert_assets(scan_id, domain, "endpoint", res.urls)
