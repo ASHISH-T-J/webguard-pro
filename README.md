@@ -671,7 +671,8 @@ vulnerabilities reachable without an account in classes WebGuard tests (see
 
 | Run | Ground truth found | Requests | Time | MEDIUM+ findings outside ground truth |
 |---|---|---|---|---|
-| `assess`, no budget | **15 / 15** | 5,718 | 235 s | 0 |
+| `assess`, no budget (current) | **15 / 15** | 7,118 | 261 s | 0 |
+| `assess`, no budget (encoding-variants release, re-run on the same day) | **15 / 15** | 5,716 | 237 s | 0 |
 | `assess --budget-requests 2000` | 13 / 15 | 2,029 | 181 s | 0 |
 | `assess --budget-requests 1000` | 12 / 15 (all critical/high found) | 1,141 | 161 s | 0 |
 | v2 scanner (before the agent) | 3 / 15 (metrics, headers, the leaked hashes - reported as 5 separate "generic password" secrets); only 3 injectable inputs mapped | 440 | 11 s | 0 |
@@ -679,6 +680,15 @@ vulnerabilities reachable without an account in classes WebGuard tests (see
 The full run is ~40% more requests than the previous release (3,715) because it now also tests header/cookie
 injection, JS source maps and chunks, cache deception and prototype pollution; with a 2,000-request budget
 those extra tests cost two ground-truth items (13/15 vs 15/15 before) - a deliberate breadth/budget trade-off.
+**Current vs encoding-variants release** (both on a fresh container, same machine): the same 15/15 and
+the same findings. Injection testing costs the same (4,505 vs 4,464 requests). All of the extra
+requests are in the configuration stage (2,026 vs 720): the server / TLS / CMS audits, fingerprint
+templates, the larger 403-bypass variant set and recursive content discovery. On Juice Shop they add
+coverage (the `/ftp` listing is now also reported by the server audit, and listed files are recorded
+individually) but no new ground-truth items. Reading directory listings instead of brute-forcing listed
+directories cut the first measurement of this release from 7,699 to 7,118 requests. For a cheaper run on
+targets like this, use `--discovery-depth 0`, `--skip server,tls,cms` or a request budget.
+
 Beyond the list, the run also found password hashes in `/support/logs/audit.json` (reached via content
 discovery) and real directory listings under `/.well-known`.
 

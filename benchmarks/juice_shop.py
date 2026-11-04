@@ -38,7 +38,8 @@ GROUND_TRUTH = [
     ("Login SQL injection auth bypass (/rest/user/login)", has("auth", "/rest/user/login")),
     ("DOM XSS via search query (#/search?q)", has("dom_xss")),
     ("Open redirect allow-list bypass (/redirect?to)", has("redirect", "/redirect")),
-    ("Directory listing exposing confidential docs (/ftp)", has("exposure", "/ftp", "listing")),
+    ("Directory listing exposing confidential docs (/ftp)",  # content discovery or the server audit
+     lambda fs: has("exposure", "/ftp", "listing")(fs) or has("server", "/ftp", "listing")(fs)),
     ("Exposed Prometheus metrics (/metrics)", has("exposure", "/metrics")),
     ("Password hashes exposed by API (/rest/memories)", has("data_exposure", "/rest/memories")),
     ("Swagger API documentation exposed (/api-docs)", lambda fs: any(f.check == "exposure" and "swagger" in f.title.lower() for f in fs)),
