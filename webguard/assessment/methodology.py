@@ -76,6 +76,7 @@ CHECK_WSTG = {
     "cve": ["WSTG-INFO-02", "WSTG-CONF-01"],
     "eol": ["WSTG-INFO-02", "WSTG-CONF-01"],
     "tls": ["WSTG-CRYP-01", "WSTG-CONF-07"],
+    "cms": ["WSTG-INFO-08", "WSTG-CONF-02", "WSTG-CONF-05"],
     "cors": ["WSTG-CLNT-07"],
     "access": ["WSTG-ATHZ-02"],
     "auth": ["WSTG-ATHN-04"],

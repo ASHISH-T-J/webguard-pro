@@ -75,6 +75,8 @@ def context_features(f: Finding) -> list[str]:
         out.append("ctx:reverified")
     if ctx.get("bypass"):
         out.append("ctx:filter_bypass")
+    if ctx.get("waf"):
+        out.append("ctx:waf_present")  # findings behind a WAF that still reproduced are strong signals
     if ctx.get("value_encoding"):
         out.append("ctx:encoded_value")
     if f.url and f.check in ("exposure", "access", "server"):

@@ -23,6 +23,7 @@ import time
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 import httpx
@@ -38,6 +39,7 @@ from webguard.detection import reflection
 from webguard.detection.baseline import title as page_title
 from webguard.detection.checks import POINT_CHECKS, advanced, analyzers, dom, hunting, passive
 from webguard.detection.checks import api as api_checks
+from webguard.detection.checks import cms as cms_checks
 from webguard.detection.checks import host as host_checks
 from webguard.detection.checks import oob as oob_checks
 from webguard.detection.checks import server as server_checks
@@ -81,7 +83,11 @@ TECH_PRIORS = {
     "flask": {"ssti": 1.5}, "werkzeug": {"ssti": 1.5}, "django": {"ssti": 1.2},
     "java": {"ssti": 1.2, "xxe": 1.4, "deserialization": 1.4}, "spring": {"ssti": 1.3, "xxe": 1.3},
     "asp.net": {"xxe": 1.2, "deserialization": 1.3, "sqli": 1.2},
-    "wordpress": {"sqli": 1.3, "xss": 1.2}, "angular": {"dom_xss": 1.3}, "react": {"dom_xss": 1.1},
+    "wordpress": {"sqli": 1.3, "xss": 1.2, "lfi": 1.1}, "angular": {"dom_xss": 1.3}, "react": {"dom_xss": 1.1},
+    "drupal": {"sqli": 1.2, "deserialization": 1.3, "ssti": 1.1}, "joomla": {"sqli": 1.3, "lfi": 1.2},
+    "magento": {"xxe": 1.3, "ssti": 1.2, "sqli": 1.2}, "laravel": {"deserialization": 1.3, "ssti": 1.1, "sqli": 1.1},
+    "rails": {"deserialization": 1.3, "ssti": 1.2, "cmdi": 1.1}, "tomcat": {"lfi": 1.2, "xxe": 1.2},
+    "iis": {"lfi": 1.1, "xxe": 1.1}, "graphql": {"idor": 1.2, "sqli": 1.1}, "mongodb": {"nosqli": 1.5},
 }
 # share of a request budget per phase (unused share carries over to later phases)
 PHASE_SHARE = {"config": 0.2, "identity": 0.1, "input": 0.5, "authz_client": 0.1, "verify": 0.1}
@@ -129,6 +135,7 @@ class AssessmentResult:
     resilience: dict = field(default_factory=dict)
     services: list[dict] = field(default_factory=list)
     assets: dict = field(default_factory=dict)
+    cms: dict = field(default_factory=dict)  # root -> {cms: enumeration results}
 
     def meta(self) -> dict:
         """Serializable assessment context for reports."""
@@ -144,7 +151,7 @@ class AssessmentResult:
             "page_types": dict(Counter(p.label for p in self.page_types.values())),
             "reasoner": self.reasoner, "environment": self.environment,
             "obstructed_inputs": self.obstructed, "resilience": self.resilience, "services": self.services,
-            "assets": self.assets,
+            "assets": self.assets, "cms": self.cms,
         }
 
 
@@ -236,6 +243,9 @@ class AssessmentAgent:
                 self._recon_used = client.stats["requests"]
                 if self.res.hosts:
                     for i, (phase, name) in enumerate(PHASES[1:], start=2):
+                        if phase in self.config.skip_phases:
+                            self._trace(phase, f"Skipping {name}: excluded by configuration.", [], "not tested")
+                            continue
                         self.on_stage(i, self.stages, name)
                         await self._phase(phase, name)
                 await self._oob_finish()
@@ -401,9 +411,8 @@ class AssessmentAgent:
             return f"HTTP 429 observed; reduced rate to {self.client.slow_down():.1f} req/s"
         if s["waf_blocks"] > getattr(self, "_seen_waf", 0) + 10:
             self._seen_waf = s["waf_blocks"]
-            if not self.config.tamper:
-                self.config.tamper = ("space2comment",)
-            return f"Repeated WAF blocks; reduced rate to {self.client.slow_down(0.7):.1f} req/s and enabled tamper"
+            # testing continues at full depth; blocked inputs are re-tested later at a lower rate (no evasion)
+            return f"Repeated WAF blocks; reduced rate to {self.client.slow_down(0.7):.1f} req/s, testing continues"
         return None
 
     def _state(self, phase: str) -> dict:
@@ -416,6 +425,8 @@ class AssessmentAgent:
             "facts": self.res.facts[-25:],
             "findings_so_far": [f"{f.severity.name} {f.title} @ {urlsplit(f.url).path} {f.parameter or ''}"
                                 for f in list(self.ctx.findings.values())[-25:]],
+            "cms": {root: sorted(v) for root, v in self.res.cms.items()},
+            "blocked_tests_pending_retest": len(self.ctx.obstructed_tests),
             "budget_remaining": round(self._budget_left(), 2),
             "budgeted": bool(self.budget_requests or self.budget_minutes),
             "requests_sent": self.client.stats["requests"],
@@ -521,6 +532,37 @@ class AssessmentAgent:
         note = self._adapt()
         if note:
             self.res.facts.append(note)
+
+    async def _retest_obstructed(self, cap: int = 40) -> None:
+        """Blocks are often burst / rate based: re-run blocked tests slowly. Unchanged payloads, no evasion;
+        whatever stays blocked is reported as NOT TESTED."""
+        ctx = self.ctx
+        todo = [(k, c, p) for (k, c), p in list(ctx.obstructed_tests.items())
+                if c in POINT_CHECKS and not self._found(c, p)][:cap]
+        if not todo:
+            return
+        ctx.obstructed_tests.clear()
+        rate = self.client.slow_down(0.5)
+        self.on_status(f"[verify] re-testing {len(todo)} blocked test(s) after {self.config.waf_cooldown:g}s cooldown "
+                       f"at {rate:.1f} req/s")
+        await asyncio.sleep(self.config.waf_cooldown)
+        reached = 0
+        for key, check, p in todo:
+            if self._budget_left() <= 0:
+                break
+            ACTIVE_CHECK.set(check)
+            try:
+                await POINT_CHECKS[check](ctx, p)
+            except Exception as exc:
+                log.debug("re-test %s on %s failed: %s", check, p.name, exc)
+            if (key, check) not in ctx.obstructed_tests:
+                reached += 1
+                label = f"{p.method} {p.url} [{p.name}] {check}"
+                for entries in ctx.obstructed.values():
+                    entries.discard(label)
+        ACTIVE_CHECK.set("")
+        self.res.facts.append(f"WAF / rate-limit re-test: {reached} of {len(todo)} blocked test(s) reached the "
+                              f"application on the slower pass; {len(todo) - reached} remain NOT TESTED")
 
     async def _history_seeds(self, hosts: list[Host]) -> list[str]:
         from webguard.recon import passive
@@ -680,6 +722,16 @@ class AssessmentAgent:
                         "CVE/EOL data, exposed and cleartext services", 5, 0, "server")
             for root in roots:
                 add("headers", root, "baseline hardening: security headers, CSP, HTTP methods", 3, 3, "headers")
+                root_pages = {u: r for u, r in pages.items() if u.startswith(root)}
+                tech = [t for h in self.res.hosts if h.url == root for t in h.technologies]
+                detected = cms_checks.detect(root_pages, tech)
+                for name in sorted(detected):
+                    add("cms", f"{name} {root}", f"{name} detected: {name}-specific enumeration (version, "
+                        "plugins/modules, users, admin interfaces, backups) and CVE matching", 7.5, 60, "cms")
+                stack = {t.lower() for t in tech} | detected
+                if any(p[0] in t for p in cms_checks.TECH_PROBES for t in stack):
+                    add("tech_probes", root, f"stack-specific exposure probes for: {', '.join(sorted(stack))[:120]}",
+                        5.5, 15, "exposure")
                 add("server_config", root, "web server audit: software versions (headers, pages, fingerprint "
                     "templates) vs CVE/EOL data, directory listing, default pages, admin/debug consoles, methods",
                     4.5, 95, "server")
@@ -697,7 +749,7 @@ class AssessmentAgent:
                 for u in [root + "/", *apis]:
                     add("cors", u, "check origin trust on " + ("API endpoint" if u in apis else "root"), 4 + (1 if u in apis else 0), 6, "cors")
             if cfg.discovery_wordlist and cfg.enabled("exposure"):
-                n = sum(1 for line in open(cfg.discovery_wordlist) if line.strip())
+                n = sum(1 for line in Path(cfg.discovery_wordlist).read_text(errors="replace").splitlines() if line.strip())
                 depth = cfg.discovery_depth if cfg.discovery_depth is not None else 1
                 if self.budget_requests and self.budget_requests < 2000:
                     depth = 0
@@ -806,6 +858,10 @@ class AssessmentAgent:
                 add("dom_xss", "browser", f"verify DOM XSS in headless Chromium ({len(self._crawl.spa_routes)} SPA routes, "
                     f"{len(self._dom_sinks)} DOM sink patterns found by grep)", 6 * sink_boost * self._tech_mult("dom_xss"), 40)
         elif phase == "verify":
+            blocked = [k for k in self.ctx.obstructed_tests if k[1] in POINT_CHECKS]
+            if blocked and cfg.waf_retest:
+                add("retest_obstructed", "blocked-tests", f"{len(blocked)} test(s) were answered by a WAF / rate "
+                    "limiter: re-test them after a cooldown at a lower rate (same payloads)", 7, min(len(blocked), 40) * 8)
             for f in self.ctx.findings.values():
                 if f.check.split(":")[0] in POINT_CHECKS and f.check != "anomaly" and f.parameter:
                     add("verify", f.fingerprint, f"independently re-test '{f.title}' on {urlsplit(f.url).path} [{f.parameter}]", 10, 30)
@@ -920,6 +976,23 @@ class AssessmentAgent:
             if p is not None:
                 await api_checks.content_type_confusion(ctx, url, method, p.params)
             self._cover("csrf")
+        elif a == "cms":
+            name, root = t.split(" ", 1)
+            info = await cms_checks.CMS_SCANNERS[name](ctx, root, {u: r for u, r in self.res.pages.items()
+                                                                   if u.startswith(root)})
+            self.res.cms.setdefault(root, {})[name] = info
+            parts = [f"{k}: {len(v) if isinstance(v, (list, dict)) else v}" for k, v in info.items() if v]
+            self.res.facts.append(f"CMS {name} on {root}" + (f" ({'; '.join(parts)})" if parts else ""))
+            self._cover("cms")
+        elif a == "tech_probes":
+            from webguard.detection.checks.host import soft404
+
+            tech = {x.lower() for h in self.res.hosts if h.url == t for x in h.technologies}
+            tech |= cms_checks.detect({u: r for u, r in self.res.pages.items() if u.startswith(t)}, list(tech))
+            await cms_checks.tech_probes(ctx, t, tech, await soft404(ctx, t))
+            self._cover("exposure")
+        elif a == "retest_obstructed":
+            await self._retest_obstructed()
         elif a == "service_audit":
             if cfg.proxy:
                 self.res.facts.append(f"Service audit of {t} skipped: raw TCP connections would bypass --proxy")
@@ -955,7 +1028,8 @@ class AssessmentAgent:
             await host_checks.cors(ctx, t)
             self._cover("cors")
         elif a == "content_discovery":
-            words = [w.strip() for w in open(cfg.discovery_wordlist) if w.strip() and not w.startswith("#")]
+            words = [w.strip() for w in Path(cfg.discovery_wordlist).read_text(errors="replace").splitlines()
+                     if w.strip() and not w.startswith("#")]
             depth = cfg.discovery_depth if cfg.discovery_depth is not None else 1
             if self.budget_requests and self.budget_requests < 2000:
                 depth = 0  # small engagement budget: spend it on high-value tests, not recursion

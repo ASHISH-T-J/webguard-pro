@@ -13,7 +13,7 @@ ALL_CHECKS = (
     # injection (per parameter)
     "sqli", "nosqli", "xss", "ssti", "lfi", "cmdi", "redirect", "crlf", "ssrf", "ldapi", "xpathi", "xinclude",
     # endpoint / host level
-    "xxe", "auth", "host_header", "access", "idor", "graphql", "cors", "headers", "exposure", "server", "tls",
+    "xxe", "auth", "host_header", "access", "idor", "graphql", "cors", "headers", "exposure", "server", "tls", "cms",
     # passive analysis
     "disclosure", "secrets", "jwt", "csrf", "deserialization", "data_exposure", "js_analysis",
     # browser + hunting
@@ -50,6 +50,9 @@ class ScanConfig:
     history: bool = False  # seed the crawl with archived URLs (Wayback / gau) for the target host
     expand_scope: bool = False  # add hosts under the target's registrable domain found in content to the scope
     max_new_hosts: int = 10  # cap on hosts added from content discovery per assessment
+    skip_phases: tuple[str, ...] = ()  # methodology phases to skip (config, identity, input, authz_client, verify)
+    waf_retest: bool = True  # re-test inputs a WAF/rate limiter blocked, after a cooldown at a lower rate
+    waf_cooldown: float = 15.0  # seconds to wait before the re-test pass
     ports: str | None = None  # network service audit: None = off, "top" = common ports, or "22,80,8000-8100"
     discovery_depth: int | None = None  # recursion levels below the root (None = profile default: 0/1/2)
     db_path: Path = DEFAULT_DB

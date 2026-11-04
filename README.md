@@ -277,6 +277,55 @@ as not tested. TLS handshakes connect directly to the target, so they are skippe
 (the HSTS and redirect checks still run through the proxy). Certificate details (key size, signature)
 need the optional `cryptography` package.
 
+### Configuration and customisation
+
+Every option can come from a config file, so a team can keep its standard setup in one place:
+
+```bash
+webguard config init                 # writes a commented ./webguard.yml
+webguard config show --command scan  # effective defaults after the config file
+webguard config keys                 # every engine setting, its type and default
+webguard scan https://t.example --config team.yml --set retries=5 --set oob_wait=30 --only-phases config,input
+```
+
+- Precedence: built-in < config `defaults:` < config `<command>:` < command-line flags < `--set`.
+- Config files are found at `--config FILE`, `$WEBGUARD_CONFIG`, `./webguard.yml` or `~/.webguard/config.yml`.
+- `--set key=value` reaches **every** engine setting, including ones without a flag (`retries`,
+  `user_agent`, `waf_cooldown`, `max_new_hosts`, `oob_wait` ...); the config file's `set:` section does
+  the same.
+- `--skip-phases` / `--only-phases` select methodology phases (`config, identity, input, authz_client,
+  verify`). Checks are chosen with `--checks` / `--skip`, and wordlists, profiles, report style, ports,
+  OOB, depth and budget have their own flags.
+
+### CMS and technology-aware scanning
+
+When a CMS is detected (host technologies or page markers), its own workflow runs. Everything is a
+read-only GET:
+
+| CMS | What is checked |
+|---|---|
+| WordPress | core version (generator, feed, readme.html), plugins and themes from page assets (`?ver=`) and `readme.txt` / `style.css`, versions matched to CVEs; user enumeration (REST API, `?author=N`); XML-RPC enabled; REST namespaces (plugin hints); config backups |
+| Drupal | version (CHANGELOG), modules from asset paths, user enumeration (`/user/N`), unfinished installer, settings backups |
+| Joomla | version (manifest), components, administrator login exposure, configuration backups |
+| Magento | version hint (`/magento_version`), downloader / setup interfaces |
+
+**Technology probes** add stack-specific exposure checks for PHP (source backups, `.user.ini`,
+`composer.lock`), Java / Spring / Tomcat (actuators, Jolokia, example apps), ASP.NET / IIS
+(`web.config` backups, Trace.axd), Node / Express, Django / Flask (Werkzeug console), Rails (dev info
+pages) and Laravel (logs, Telescope). Detected technologies and CMSs also re-weight which injection
+classes are tried first (for example NoSQL injection on Node/MongoDB, deserialization and SSTI on Rails,
+XXE on Magento and Java) and are passed to the reasoning engine.
+
+### Scanning behind a WAF
+
+A WAF never removes a host or a test from the scan, and hosts behind a WAF are not ranked lower in
+`hunt`. Testing continues at full depth at a reduced rate. Every test answered by a WAF, CDN challenge
+or rate limiter (not the application) is recorded. In the verification stage, those tests are re-run
+after a cooldown (`--set waf_cooldown=15`) at half the rate, with **the same payloads**: blocks are
+often burst- or rate-based. Tests that are still blocked are reported as NOT TESTED, never as "not
+vulnerable". There is deliberately no WAF evasion (no obfuscation or bypass tampers against a WAF).
+Tamper and encoding variants remain limited to application-level input filters.
+
 ### Efficiency: stop testing what is already proven
 
 - **Confirmed class, stop that class there.** A FIRM or CERTAIN finding records its bug class for that
@@ -594,6 +643,23 @@ are masked. **Terminal output is never masked**: it is the tester's own console.
 
 ---
 
+## How it compares
+
+An honest positioning against established tools. Specialised tools go deeper in their niche;
+WebGuard's strength is one methodology-driven pipeline with verification and client-ready reporting.
+
+| Area | WebGuard | Reference tools | Gap |
+|---|---|---|---|
+| Crawling / DAST breadth | crawler + JS/API mining, OpenAPI import, reflection-guided per-input test plans, ~25 bug classes, re-verification | OWASP ZAP, Burp Suite Pro scanner | Burp/ZAP have mature browser-driven crawling for complex auth flows and a manual testing UI; WebGuard's browser use is limited to DOM XSS / prototype pollution / PoCs |
+| SQL injection | detection (error / boolean / time / tamper chains), sqlmap hand-off command | sqlmap | no exploitation or data extraction by design |
+| Templates / CVE coverage | ~95 curated CVEs (KEV/RCE flagged) matched by version; 77 identification templates | nuclei (thousands of community templates, active checks) | far smaller corpus; no active CVE verification templates |
+| WordPress | core/plugin/theme versions, users, XML-RPC, ~14 plugin CVEs | WPScan (large vulnerability database) | much smaller plugin vulnerability data |
+| TLS | protocols, weak suites, certificate checks, HSTS | testssl.sh, sslyze | fewer checks (no per-cipher listing or vulnerability-specific TLS tests) |
+| Content discovery / fuzzing | recursive, per-directory soft-404 calibration, NLP-ordered, `webguard fuzz` | ffuf, feroxbuster, dirsearch | slower raw throughput (Python, scope- and rate-controlled) |
+| Server checks | default pages, listings, consoles, methods, banners and versions | Nikto | smaller signature set, fewer false positives |
+| Subdomains | passive sources + brute force, permutations, wildcard filtering, AXFR, robust liveness | subfinder, amass, puredns, httpx | no large resolver pools; brute force uses the system resolver |
+| OOB | interactsh client, local listener, correlation to the exact test | Burp Collaborator, interactsh-client | blind SSRF / XXE only |
+
 ## Benchmarks
 
 Measured in this repository's CI-equivalent environment (Python 3.13, local Docker), using the
@@ -721,7 +787,7 @@ Extend detection without code: drop JSON files into a directory and pass `--sign
 
 ```bash
 pip install -e ".[all,dev]"
-pytest -q                       # 205 tests: e2e detection + safe twins, server/TLS audit, resilience/rate limits, context, agent, reporting/redaction, console/resume, NLP, CLI
+pytest -q                       # 214 tests: e2e detection + safe twins, server/TLS audit, resilience/rate limits, context, agent, reporting/redaction, console/resume, NLP, CLI
 ruff check webguard tests
 python tests/vulnapp.py         # run the vulnerable test app locally
 python benchmarks/juice_shop.py # benchmark against a running Juice Shop

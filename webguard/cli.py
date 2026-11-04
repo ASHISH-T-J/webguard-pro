@@ -180,6 +180,12 @@ def _common(p: argparse.ArgumentParser) -> None:
     _report_args(g)
     g.add_argument("--db", default=str(DEFAULT_DB), help=f"SQLite database (default {DEFAULT_DB})")
     g.add_argument("--model", default=str(DEFAULT_MODEL), help="ML triage model path")
+    g = p.add_argument_group("customisation")
+    g.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
+                   help="override any engine setting, e.g. --set retries=5 --set oob_wait=30 (see 'webguard config keys')")
+    g.add_argument("--skip-phases", metavar="LIST",
+                   help="skip methodology phases: config,identity,input,authz_client,verify")
+    g.add_argument("--only-phases", metavar="LIST", help="run only these phases (recon always runs)")
     g = p.add_argument_group("console & session")
     g.add_argument("-v", "--verbose", type=int, nargs="?", const=2, default=1, metavar="N",
                    help="verbosity 0-6 (default 1): 2 debug, 3 payloads raw+encoded, 4 HTTP requests, "
@@ -345,9 +351,16 @@ def build_parser() -> argparse.ArgumentParser:
     fz.add_argument("--scope", help="scope file (default: the URL's host)")
     fz.add_argument("-o", "--output", help="write hits as JSON")
     fz.add_argument("--no-color", action="store_true")
+    cf = sub.add_parser("config", help="config file: write a template, show effective settings, list keys")
+    cf.add_argument("action", choices=["init", "show", "keys"])
+    cf.add_argument("path", nargs="?", default="webguard.yml", help="file for 'init' (default ./webguard.yml)")
+    cf.add_argument("--command", default="scan", help="for 'show': which command's effective defaults")
     w = sub.add_parser("wizard", help="guided mode: answers a few questions, explains and runs the right command")
     w.add_argument("--batch", action="store_true", help="accept the default answer for every question")
     return p
+
+
+_FILE_SET: dict = {}  # 'set:' section of the loaded config file
 
 
 def make_config(args: argparse.Namespace) -> ScanConfig:
@@ -372,7 +385,7 @@ def make_config(args: argparse.Namespace) -> ScanConfig:
         raise SystemExit(f"unknown tamper: {set(tamper) - set(TAMPERS)}")
     from webguard.config import apply_profile
 
-    return apply_profile(ScanConfig(
+    cfg = apply_profile(ScanConfig(
         concurrency=args.concurrency, rate_limit=args.rate, timeout=args.timeout, max_depth=args.depth,
         max_urls=args.max_urls, proxy=args.proxy, headers=headers, cookies=cookies, checks=checks,
         time_delay=args.time_delay, timing_checks=not args.no_timing, param_discovery=args.param_discovery,
@@ -382,6 +395,17 @@ def make_config(args: argparse.Namespace) -> ScanConfig:
         **({"discovery_wordlist": None} if args.no_discovery else
            {"discovery_wordlist": Path(args.wordlist), "wordlist": Path(args.wordlist)} if args.wordlist else {}),
     ), args.profile, explicit_wordlist=bool(args.wordlist) or args.no_discovery)
+    from webguard.assessment.methodology import PHASES
+    from webguard.userconfig import apply_set, parse_set
+
+    phases = [p for p, _ in PHASES[1:]]
+    skip = {x.strip() for x in (getattr(args, "skip_phases", None) or "").split(",") if x.strip()}
+    if getattr(args, "only_phases", None):
+        skip |= set(phases) - {x.strip() for x in args.only_phases.split(",")}
+    if skip - set(phases):
+        raise SystemExit(f"unknown phases: {', '.join(sorted(skip - set(phases)))} (valid: {', '.join(phases)})")
+    cfg.skip_phases = tuple(sorted(skip))
+    return apply_set(cfg, {**_FILE_SET, **parse_set(getattr(args, "set", []))})
 
 
 def make_scope(args: argparse.Namespace, target: str) -> Scope:
@@ -1002,9 +1026,62 @@ def _summary(findings, new, stats, paths, scan_id) -> None:
         ui.status(f"Report: {p}")
 
 
+def _load_user_config(argv: list[str], parser) -> list[str]:
+    """Strip --config FILE from argv, load it (or an auto-discovered file) into the parser defaults."""
+    from webguard import userconfig
+
+    explicit = None
+    out: list[str] = []
+    it = iter(range(len(argv)))
+    for i in it:
+        a = argv[i]
+        if a == "--config" and i + 1 < len(argv):
+            explicit = argv[i + 1]
+            next(it, None)
+        elif a.startswith("--config="):
+            explicit = a.split("=", 1)[1]
+        else:
+            out.append(a)
+    path = userconfig.find(explicit)
+    data = userconfig.load(path)
+    subs = parser._subparsers._group_actions[0].choices
+    for w in userconfig.apply_defaults(parser, subs, data):
+        ui.warn(w)
+    _FILE_SET.clear()
+    _FILE_SET.update({str(k): v for k, v in (data.get("set") or {}).items()})
+    parser.loaded_config = path
+    return out
+
+
+def cmd_config(args, parser) -> int:
+    from webguard import userconfig
+
+    if args.action == "init":
+        path = Path(args.path)
+        if path.exists():
+            raise SystemExit(f"{path} exists - not overwriting")
+        path.write_text(userconfig.TEMPLATE)
+        ui.status(f"Config template written to {path} (uncomment what you need)")
+    elif args.action == "keys":
+        for name, typ, default in userconfig.keys():
+            print(f"  {name:<22} {typ:<28} default: {default!r}")
+    else:
+        sub = parser._subparsers._group_actions[0].choices[args.command]
+        print(f"# effective defaults for '{args.command}' (config: {getattr(parser, 'loaded_config', None) or 'none'})")
+        for a in sub._actions:
+            if a.dest not in ("help", "targets", "target", "url", "domain") and a.default is not argparse.SUPPRESS:
+                print(f"  {a.dest:<22} {a.default!r}")
+        if _FILE_SET:
+            print("# set:")
+            for k, v in _FILE_SET.items():
+                print(f"  {k:<22} {v!r}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = _verbosity_argv(list(sys.argv[1:] if argv is None else argv))
     parser = build_parser()
+    argv = _load_user_config(argv, parser)
     if not argv:
         parser.print_help()
         return 0
@@ -1031,6 +1108,8 @@ def main(argv: list[str] | None = None) -> int:
             return asyncio.run(fn(args))
         if args.cmd == "grep":
             return cmd_grep(args)
+        if args.cmd == "config":
+            return cmd_config(args, parser)
         if args.cmd == "fuzz":
             return asyncio.run(cmd_fuzz(args))
         if args.cmd == "ask":

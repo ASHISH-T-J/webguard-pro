@@ -68,9 +68,8 @@ def prioritise(hosts: list[Host], ports: dict[str, list[int]], interesting_urls:
         if HOT_TECH.search(tech + " " + h.title):
             score += 3
             reasons.append("high-value technology")
-        if not h.waf:
-            score += 1.5
-            reasons.append("no WAF detected")
+        if h.waf:  # a WAF never removes a host from testing; it is only noted
+            reasons.append(f"WAF: {', '.join(h.waf)}")
         if h.status in (401, 403):
             score += 1
             reasons.append(f"access-controlled ({h.status}) - try bypasses")

@@ -81,6 +81,7 @@ class Context:
         # inputs where a WAF / CDN challenge / rate limiter answered instead of the application
         self.obstructed: dict[str, set[str]] = {}
         self.obstructed_keys: set[tuple] = set()
+        self.obstructed_tests: dict[tuple, InjectionPoint] = {}  # (point key, check) -> point, for the re-test pass
         # evidence that the application filters input for a point (validation errors, stripped characters)
         self.filter_signals: dict[tuple, int] = {}
         self.escaped_points: set[tuple] = set()  # reflections came back HTML-escaped (decode-order bugs possible)
@@ -174,13 +175,15 @@ class Context:
         if point is not None:
             self.obstructed.setdefault(rc.kind, set()).add(f"{point.method} {point.url} [{point.name}] {check}".strip())
             self.obstructed_keys.add(point.key)
+            if check:
+                self.obstructed_tests.setdefault((point.key, check), point)
         return False
 
-    def _observe_filter(self, point: InjectionPoint, value: str, resp: Resp) -> None:
+    def _observe_filter(self, point: InjectionPoint, value: str, resp: Resp, rc=None) -> None:
         """Remember application-level filtering for this input (enables bypass variants)."""
         from webguard.analysis.context import classify
 
-        if resp is None or not classify(resp).is_app_response:
+        if resp is None or not (rc or classify(resp)).is_app_response:
             return
         hit = resp.status in (400, 406, 422) or (resp.status < 500 and FILTER_HINT.search(resp.text[:5000]))
         if any(c in value for c in "<>\"'") and value not in resp.text and _html.escape(value) in resp.text:
@@ -249,7 +252,16 @@ class Context:
         except OutOfScopeError:
             return None
         if resp is not None:
-            self._observe_filter(point, str(value), resp)
+            from webguard.analysis.context import classify
+
+            rc = classify(resp)  # once per response: shared by filter tracking and block detection
+            self._observe_filter(point, str(value), resp, rc)
+            if check and not VERIFYING.get():
+                if not rc.is_app_response:  # WAF / challenge / rate limiter answered: queue for the re-test pass
+                    self.obstructed.setdefault(rc.kind, set()).add(
+                        f"{point.method} {point.url} [{point.name}] {check}")
+                    self.obstructed_keys.add(point.key)
+                    self.obstructed_tests.setdefault((point.key, check), point)
         return resp
 
     def curl(self, point: InjectionPoint, value: str) -> str:

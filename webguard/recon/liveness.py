@@ -116,6 +116,9 @@ async def check(client, name: str, ports: tuple[int, ...] = DEFAULT_PORTS,
     t0 = time.monotonic()
     host, port = _split(name)
     res = Liveness(name)
+    if not getattr(client, "direct", True):
+        # through a proxy (Burp, SOCKS/Tor) the target may not resolve or route from here: HTTP-only checks
+        return await _http_only(client, host, port, res, timeouts, reset, t0)
     try:
         ipaddress.ip_address(host)
         res.ips = [host]
@@ -154,6 +157,28 @@ async def check(client, name: str, ports: tuple[int, ...] = DEFAULT_PORTS,
     res.status = "live" if res.urls else "unresponsive"
     if not res.urls:
         res.reason = f"TCP open on {', '.join(map(str, res.open_ports))} but no HTTP answer within {max(timeouts):g}s"
+    res.elapsed = round(time.monotonic() - t0, 2)
+    return res
+
+
+async def _http_only(client, host: str, port: int | None, res: Liveness, timeouts, reset: bool, t0: float) -> Liveness:
+    ports = (port,) if port else DEFAULT_PORTS
+    for timeout in timeouts:
+        for p in ports:
+            bases = _bases(host, p) if port else [f"{'https' if p == 443 else 'http'}://{host}"]
+            for base in bases:
+                if reset:
+                    _reset(client, base)
+                res.attempts += 1
+                r = await _http(client, base, timeout)
+                if r is not None and base not in res.urls:
+                    res.urls.append(base)
+                    res.http_status = res.http_status or r.status
+        if res.urls:
+            break
+    res.status = "live" if res.urls else "unresponsive"
+    if not res.urls:
+        res.reason = "no HTTP answer through the proxy / transport"
     res.elapsed = round(time.monotonic() - t0, 2)
     return res
 

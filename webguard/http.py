@@ -334,6 +334,8 @@ class HttpClient:
             limits=httpx.Limits(max_connections=config.concurrency * 2, max_keepalive_connections=config.concurrency),
         )
         kwargs["event_hooks"] = {"response": [_guard_location]}
+        # traffic does not go straight to the target (proxy / custom transport): raw DNS / TCP checks are wrong
+        self.direct = transport is None and not config.proxy
         if transport is not None:
             kwargs["transport"] = transport
         elif config.proxy:

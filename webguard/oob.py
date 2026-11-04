@@ -297,11 +297,14 @@ async def spawn(spec: str | None, token: str | None = None, proxy: str | None = 
         return None
     kind, _, rest = spec.partition(":")
     if kind in ("auto", "interactsh"):
+        p = None
         try:
-            p: Provider = Interactsh(rest or None, token, proxy, transport)
+            p = Interactsh(rest or None, token, proxy, transport)
             await p.start()
             return p
         except Exception as exc:
+            if p is not None:
+                await p._http.aclose()  # don't leak the HTTP client of a failed registration
             if kind == "interactsh":
                 raise
             log.warning("OOB: %s - falling back to a local listener", exc)
