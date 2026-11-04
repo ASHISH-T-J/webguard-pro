@@ -144,11 +144,19 @@ def _common(p: argparse.ArgumentParser) -> None:
     g.add_argument("--no-timing", action="store_true", help="disable time-based checks (faster, less noisy)")
     g.add_argument("--time-delay", type=int, default=5, help="sleep seconds for time-based payloads")
     g.add_argument("--param-discovery", action="store_true", help="brute-force hidden parameters (Arjun-style)")
-    g.add_argument("--oob", metavar="DOMAIN", help="out-of-band interaction domain (interactsh/Collaborator) for blind SSRF")
+    g.add_argument("--oob", nargs="?", const="auto", metavar="SPEC",
+                   help="out-of-band detection of blind SSRF/XXE: auto (default: public interactsh, local fallback), "
+                        "interactsh[:server], local[:ip[:port]] (listener spawned for the scan), or your own "
+                        "Collaborator/interactsh domain (manual correlation)")
+    g.add_argument("--oob-token", help="auth token for a self-hosted interactsh server")
+    g.add_argument("--oob-wait", type=float, default=10.0, metavar="SEC",
+                   help="keep polling for late interactions after testing (default 10s)")
     g.add_argument("--tamper", help="comma list: space2comment,randomcase,space2plus,versioned,charencode")
     g.add_argument("--signatures", action="append", default=[], help="extra signature directory (JSON files)")
     g.add_argument("--wordlist", help="content-discovery wordlist (default: built-in quick list of ~200 paths)")
     g.add_argument("--no-discovery", action="store_true", help="skip content discovery (path brute force)")
+    g.add_argument("--discovery-depth", type=int, metavar="N",
+                   help="recursive directory brute force depth (default: safe 0, standard 1, thorough 2)")
     g = p.add_argument_group("output")
     g.add_argument("-o", "--output", default="reports", help="report directory (default ./reports)")
     g.add_argument("-f", "--format", default="json,html,md", help=f"report formats: {','.join(FORMATS)}")
@@ -326,7 +334,8 @@ def make_config(args: argparse.Namespace) -> ScanConfig:
         concurrency=args.concurrency, rate_limit=args.rate, timeout=args.timeout, max_depth=args.depth,
         max_urls=args.max_urls, proxy=args.proxy, headers=headers, cookies=cookies, checks=checks,
         time_delay=args.time_delay, timing_checks=not args.no_timing, param_discovery=args.param_discovery,
-        oob_domain=args.oob, tamper=tamper, db_path=Path(args.db), model_path=Path(args.model), verbose=args.verbose or 0,
+        oob=args.oob, oob_token=args.oob_token, oob_wait=args.oob_wait,
+        discovery_depth=args.discovery_depth, tamper=tamper, db_path=Path(args.db), model_path=Path(args.model), verbose=args.verbose or 0,
         **({"discovery_wordlist": None} if args.no_discovery else
            {"discovery_wordlist": Path(args.wordlist), "wordlist": Path(args.wordlist)} if args.wordlist else {}),
     ), args.profile, explicit_wordlist=bool(args.wordlist) or args.no_discovery)
@@ -404,8 +413,8 @@ async def cmd_scan(args: argparse.Namespace) -> int:
         paths = write_all(target, res.findings, Path(args.output), _formats(args.format), {"scan_id": scan_id, **res.meta()},
                       _report_options(args))
         _summary(res.findings, new, res.stats, paths, scan_id)
-        if res.oob:
-            ui.warn(f"{len(res.oob)} OOB payloads sent - check {cfg.oob_domain} for interactions (tokens in JSON report)")
+        if res.oob and cfg.oob and cfg.oob.split(":")[0] not in ("auto", "interactsh", "local"):
+            ui.warn(f"{len(res.oob)} OOB payloads sent - check {cfg.oob} for interactions (ids in the JSON report)")
         if res.findings:
             worst = max(worst, max(f.severity for f in res.findings))
     return 2 if worst >= Severity.HIGH else 0

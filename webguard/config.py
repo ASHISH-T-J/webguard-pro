@@ -38,12 +38,16 @@ class ScanConfig:
     time_delay: int = 5  # seconds for time-based payloads
     timing_checks: bool = True
     param_discovery: bool = False
-    oob_domain: str | None = None  # interactsh/collaborator domain for blind SSRF
+    oob_domain: str | None = None  # legacy alias of ``oob`` (a static Collaborator/interactsh domain)
+    oob: str | None = None  # auto | interactsh[:server] | local[:ip[:port]] | <domain>  (see webguard.oob)
+    oob_token: str | None = None  # auth token for a self-hosted interactsh server
+    oob_wait: float = 10.0  # seconds to keep polling for late interactions after testing
     tamper: tuple[str, ...] = ()
     bypass_variants: bool = True  # per-class encoding/normalisation variants against application filters
     auto_tamper: bool = True  # sqlmap-style tamper chains when an *application* input filter blocks basics
     wordlist: Path = DATA_DIR / "wordlists" / "common.txt"  # ffuf / large brute force
     discovery_wordlist: Path | None = DATA_DIR / "wordlists" / "quick.txt"  # built-in content discovery (None = off)
+    discovery_depth: int | None = None  # recursion levels below the root (None = profile default: 0/1/2)
     db_path: Path = DEFAULT_DB
     model_path: Path = DEFAULT_MODEL
     verbose: int = 0
@@ -66,10 +70,14 @@ def apply_profile(cfg: ScanConfig, profile: str, explicit_wordlist: bool = False
         cfg.concurrency = min(cfg.concurrency, 5)
         cfg.timing_checks = False
         cfg.checks = tuple(c for c in cfg.checks if c != "anomaly")
+        cfg.discovery_depth = 0 if cfg.discovery_depth is None else cfg.discovery_depth
     elif profile == "thorough":
         cfg.param_discovery = True
+        cfg.discovery_depth = 2 if cfg.discovery_depth is None else cfg.discovery_depth
         if not explicit_wordlist and cfg.discovery_wordlist is not None:
             cfg.discovery_wordlist = DATA_DIR / "wordlists" / "common.txt"
-    elif profile != "standard":
+    elif profile == "standard":
+        cfg.discovery_depth = 1 if cfg.discovery_depth is None else cfg.discovery_depth
+    else:
         raise ValueError(f"unknown profile {profile!r}: {', '.join(PROFILES)}")
     return cfg

@@ -56,6 +56,7 @@ class Context:
         self.on_finding = on_finding
         self.findings: dict[str, Finding] = {}
         self.oob_log: list[dict[str, str]] = []
+        self.oob = None  # webguard.oob.Provider when out-of-band detection is enabled
         # inputs where a WAF / CDN challenge / rate limiter answered instead of the application
         self.obstructed: dict[str, set[str]] = {}
         self.obstructed_keys: set[tuple] = set()
@@ -96,6 +97,18 @@ class Context:
             if url is not None and f.url == url:
                 return True
         return False
+
+    def oob_payload(self, check: str, point: InjectionPoint | None = None, **label):
+        """A unique, single-use callback for this test (None when OOB detection is off)."""
+        if self.oob is None:
+            return None
+        if point is not None:
+            label = {"url": point.url, "method": point.method, "parameter": point.name,
+                     "location": point.location, **label}
+        p = self.oob.new_payload({"check": check, **label})
+        self.oob_log.append({"id": p.id, "check": check, "url": label.get("url", ""),
+                             "parameter": label.get("parameter") or "", "callback": p.url})
+        return p
 
     # ------------------------------------------------------------------ response context
     def app_answered(self, resp, point: InjectionPoint | None = None, check: str = "") -> bool:

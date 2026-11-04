@@ -91,14 +91,25 @@ async def inventory(ctx: Context, root: str, pages: list[Resp]) -> list[tuple[st
         r = await ctx.client.safe_get(root + path)
         if r is not None:
             samples.append(r)
-    seen: dict[tuple[str, str], tuple[str, str]] = {}
+    from webguard.nlp.fingerprint import extract
+
+    seen: dict[tuple[str, str], tuple[str, str, float]] = {}
     for r in samples:
         for product, version, source, banner in software_versions(r):
             v = cve.normalize_version(version)
             if v and (product, v) not in seen:
-                seen[(product, v)] = (source, banner)
-    for (product, v), (source, banner) in seen.items():
+                seen[(product, v)] = (source, banner, 1.0)
+    known = {p for p, _ in seen}
+    for r in samples:  # long tail: footers / about pages in free text (NLP, context-scored)
+        if r.status == 200 and r.is_html:
+            for product, version, conf in extract(r.text):
+                v = cve.normalize_version(version)
+                if v and product not in known and (product, v) not in seen:
+                    seen[(product, v)] = (f"page text (NLP match, confidence {conf:.2f})", "", conf)
+    for (product, v), (source, banner, conf) in seen.items():
         for f in cve.findings_for(product, v, root + "/", source, banner):
+            if conf < 0.8:
+                f.confidence = Confidence.TENTATIVE
             ctx.report(f)
         eol = cve.eol_finding(product, v, root + "/", source)
         if eol:

@@ -37,6 +37,7 @@ from webguard.crawler import Crawler, CrawlResult, normalize_url
 from webguard.detection.baseline import title as page_title
 from webguard.detection.checks import POINT_CHECKS, advanced, analyzers, dom, hunting, passive
 from webguard.detection.checks import host as host_checks
+from webguard.detection.checks import oob as oob_checks
 from webguard.detection.checks import server as server_checks
 from webguard.detection.checks import tls as tls_checks
 from webguard.detection.context import ACTIVE_CHECK, ACTIVE_ENCODING, ACTIVE_VARIANT, Context
@@ -205,6 +206,7 @@ class AssessmentAgent:
             self.ctx = Context(client, self.config, self.sigdb, self._report)
             if self.checkpoint is not None and self.checkpoint.resumed:
                 self._restore(self.checkpoint)
+            await self._oob_start()
             try:
                 self.on_stage(1, self.stages, PHASES[0][1])
                 await self._recon(target, list(extra_urls), hosts)
@@ -213,8 +215,10 @@ class AssessmentAgent:
                     for i, (phase, name) in enumerate(PHASES[1:], start=2):
                         self.on_stage(i, self.stages, name)
                         await self._phase(phase, name)
+                await self._oob_finish()
                 completed = True
             finally:
+                await self._oob_close()
                 if self.checkpoint is not None and not completed:
                     self._save_checkpoint()  # interrupted / crashed: keep what was done for --resume
                 self.res.oob = self.ctx.oob_log
@@ -228,6 +232,77 @@ class AssessmentAgent:
         self.res.stats["duration_s"] = round(time.time() - self.res.started, 1)
         self.res.stats["findings"] = len(self.res.findings)
         return self.res
+
+    # ------------------------------------------------------------------ out-of-band interactions
+    async def _oob_start(self) -> None:
+        self._oob_task: asyncio.Task | None = None
+        self._oob_reported: set[str] = set()
+        spec = self.config.oob or self.config.oob_domain
+        if not spec:
+            return
+        from webguard import oob
+
+        try:
+            self.ctx.oob = await oob.spawn(spec, self.config.oob_token, self.config.proxy)
+        except Exception as exc:
+            self.res.facts.append(f"Out-of-band detection disabled: {exc}")
+            self.on_status(f"OOB detection disabled: {exc}")
+            return
+        if self.ctx.oob is None:
+            return
+        self.res.facts.append(f"Out-of-band detection via {self.ctx.oob.describe()}")
+        self.on_status(f"OOB interaction server: {self.ctx.oob.describe()}")
+        if self.ctx.oob.polls:
+            self._oob_task = asyncio.create_task(self._oob_poller())
+
+    async def _oob_poller(self, interval: float = 5.0) -> None:
+        while True:
+            await asyncio.sleep(interval)
+            await self._oob_collect()
+
+    async def _oob_collect(self) -> int:
+        """Correlate new interactions with the probes that caused them and report findings."""
+        if self.ctx.oob is None:
+            return 0
+        try:
+            pairs = await self.ctx.oob.correlate()
+        except Exception as exc:
+            log.debug("OOB poll failed: %s", exc)
+            return 0
+        grouped: dict[str, tuple] = {}
+        for payload, it in pairs:
+            grouped.setdefault(payload.id, (payload, []))[1].append(it)
+        for pid, (payload, its) in grouped.items():
+            if pid in self._oob_reported:
+                continue
+            self._oob_reported.add(pid)
+            prev, self._cur_phase = self._cur_phase, payload.label.get("phase", "input")
+            self.ctx.report(oob_checks.interaction_finding(payload, its))
+            self._cur_phase = prev
+        return len(grouped)
+
+    async def _oob_finish(self) -> None:
+        """Late interactions (queued jobs, retries) arrive after the probe: keep polling for a while."""
+        oob = self.ctx.oob
+        if oob is None or not oob.polls or not oob.payloads:
+            return
+        self.on_status(f"Waiting {self.config.oob_wait:g}s for out-of-band interactions "
+                       f"({len(oob.payloads)} callback(s) issued)")
+        deadline = time.time() + self.config.oob_wait
+        while time.time() < deadline:
+            await self._oob_collect()
+            await asyncio.sleep(min(1.0, max(0.0, deadline - time.time())))
+        await self._oob_collect()
+
+    async def _oob_close(self) -> None:
+        task = getattr(self, "_oob_task", None)
+        if task is not None:
+            task.cancel()
+        if getattr(self.ctx, "oob", None) is not None:
+            try:
+                await self.ctx.oob.close()
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------ progress & sessions
     stages = len(PHASES) + 1  # methodology phases + analysis & reporting
@@ -520,15 +595,19 @@ class AssessmentAgent:
                     add("cors", u, "check origin trust on " + ("API endpoint" if u in apis else "root"), 4 + (1 if u in apis else 0), 6, "cors")
             if cfg.discovery_wordlist and cfg.enabled("exposure"):
                 n = sum(1 for line in open(cfg.discovery_wordlist) if line.strip())
+                depth = cfg.discovery_depth if cfg.discovery_depth is not None else 1
+                if self.budget_requests and self.budget_requests < 2000:
+                    depth = 0
                 for root in roots:
-                    add("content_discovery", root, f"brute-force {n} unlinked paths (soft-404 calibrated) to find "
-                        "hidden admin/backup/debug content", 6.5, n)
+                    add("content_discovery", root, f"brute-force {n} unlinked paths (soft-404 calibrated, recursive to "
+                        f"depth {depth}, 403 bypass on forbidden paths) to find hidden admin/backup/debug content",
+                        6.5, n + depth * 3 * min(n, 400))
             for u, r in pages.items():
                 if r.status in (401, 403) and len([c for c in out if c.action == "forbidden_bypass"]) < 10:
                     # 403 = "forbidden" (often a proxy rule: bypassable); 401 = "log in first" (usually app-enforced)
                     prior = 5 if r.status == 403 or PRIVILEGED.search(u) else 2
                     add("forbidden_bypass", u, f"access-controlled resource (HTTP {r.status}) - try path/header bypasses",
-                        prior, 14, "access")
+                        prior, 16 if self.budget_requests else 32, "access")  # variants + calibration
             for u in list(pages) + sorted(self._crawl.js_endpoints):
                 if "graphql" in u.lower():
                     add("graphql", u.split("?")[0], "GraphQL endpoint: introspection & batching", 4, 2, "graphql")
@@ -719,7 +798,11 @@ class AssessmentAgent:
             self._cover("cors")
         elif a == "content_discovery":
             words = [w.strip() for w in open(cfg.discovery_wordlist) if w.strip() and not w.startswith("#")]
-            found = await hunting.content_discovery(ctx, t, words)
+            depth = cfg.discovery_depth if cfg.discovery_depth is not None else 1
+            if self.budget_requests and self.budget_requests < 2000:
+                depth = 0  # small engagement budget: spend it on high-value tests, not recursion
+            found = await hunting.content_discovery(ctx, t, words, depth=depth,
+                                                    max_dirs=4 if self.budget_requests else 12)
             new_urls = [u for u, _ in found if u not in self.res.pages]
             if new_urls:  # crawl one level into what we found and merge it into the attack surface
                 sub = await Crawler(self.client, 1, 200).crawl(new_urls)
@@ -737,7 +820,7 @@ class AssessmentAgent:
                                       f"{len(sub.pages)} new URL(s) mapped")
             self._cover("exposure")
         elif a == "forbidden_bypass":
-            await advanced.forbidden_bypass(ctx, t, self.res.pages[t])
+            await advanced.forbidden_bypass(ctx, t, self.res.pages[t], limit=12 if self.budget_requests else None)
             self._cover("access")
         elif a == "graphql":
             await advanced.graphql(ctx, t)
@@ -779,6 +862,8 @@ class AssessmentAgent:
                 self._cover(check)
         elif a == "xxe":
             await advanced.xxe(ctx, t)
+            if ctx.oob is not None and not ctx.has("xxe", url=t):
+                await oob_checks.blind_xxe(ctx, t)  # parser may resolve entities without echoing them
             self._cover("xxe")
         elif a == "host_header":
             await advanced.host_header(ctx, t)

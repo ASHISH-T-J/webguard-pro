@@ -64,6 +64,7 @@ INDEX = """<html><head><title>Shop</title>
 <a href="/safe/xss/decode?q=hi">safe xss decode</a> <a href="/data?data=MTAwMQ==">data</a> <a href="/safe/data?data=MTAwMQ==">safe data</a>
 <a href="/cmd/filter?host=127.0.0.1">cmd filter</a> <a href="/safe/cmd/filter?host=127.0.0.1">safe cmd filter</a>
 <a href="/fetch?url=https://trusted.example/logo.png">fetch</a> <a href="/safe/fetch?url=https://trusted.example/logo.png">safe fetch</a>
+<a href="/webhook?callback=https://hooks.trusted.example/notify">webhook</a> <a href="/safe/webhook?callback=https://hooks.trusted.example/notify">safe webhook</a>
 <a href="/directory?user=alice">directory</a> <a href="/safe/directory?user=alice">safe directory</a>
 <a href="/lookup?name=alice">lookup</a> <a href="/safe/lookup?name=alice">safe lookup</a>
 <a href="/stock?productId=1">stock</a> <a href="/safe/stock?productId=1">safe stock</a> <a href="/render?tpl=hello">render</a> <a href="/safe/filtered/item?id=1">safe filtered item</a>
@@ -280,6 +281,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send("<html><head><title>Example Domain</title></head><body>This domain is for use "
                                   "in illustrative examples</body></html>")
             return self._send(page("<p>fetched image</p>"))
+        if p in ("/webhook", "/safe/webhook"):  # blind SSRF: the callback is fetched, nothing is echoed
+            u = q.get("callback", "")
+            if p == "/webhook" and urlsplit(u).hostname in ("127.0.0.1", "localhost"):
+                # loopback only: keeps the fixture offline while still making a real outbound request
+                threading.Thread(target=_fetch_quietly, args=(u,), daemon=True).start()
+            elif p == "/safe/webhook" and urlsplit(u).hostname != "hooks.trusted.example":
+                return self._send(page("<p>callback host not allowed</p>"), 400)
+            return self._send(page("<p>webhook queued</p>"))
         if p in ("/directory", "/safe/directory"):  # LDAP filter (&(uid=<user>)(objectClass=person))
             u = q.get("user", "")
             if p == "/directory" and (u.count("(") != u.count(")") or re.search(r"[*\\]\)|\)\(", u)):
@@ -432,6 +441,15 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/logout":
             raise AssertionError("scanner must never request /logout")
         self._send(page("<h1>Not Found</h1>"), 404)
+
+
+def _fetch_quietly(url: str) -> None:
+    import urllib.request
+
+    try:
+        urllib.request.urlopen(url, timeout=3).read()
+    except Exception:
+        pass
 
 
 class VulnServer:

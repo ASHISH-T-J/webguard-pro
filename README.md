@@ -277,6 +277,45 @@ as not tested. TLS handshakes connect directly to the target, so they are skippe
 (the HSTS and redirect checks still run through the proxy). Certificate details (key size, signature)
 need the optional `cryptography` package.
 
+### Out-of-band (blind) detection
+
+`--oob` spawns an interaction server for the scan and gives every blind probe its own single-use
+callback id. A background poller correlates interactions with the exact test, URL and parameter that
+caused them, and keeps polling for `--oob-wait` seconds (default 10) after testing for late callbacks.
+
+| `--oob` value | Provider |
+|---|---|
+| `auto` (or bare `--oob`) | public interactsh server (`oast.*`), falling back to a local listener |
+| `interactsh[:server]` | interactsh (public or self-hosted with `--oob-token`); interactions are encrypted for the session (RSA-OAEP + AES), needs `cryptography` |
+| `local[:ip[:port]]` | HTTP listener spawned on this machine for the scan (labs / internal networks) |
+| `your.collaborator.domain` | payloads recorded for manual correlation (no polling) |
+
+Used for **blind SSRF** (URL-like inputs whose fetch result is not shown) and **blind XXE** (XML
+endpoints that resolve external entities without echoing them). An HTTP callback is CERTAIN; a DNS-only
+lookup is FIRM, because resolvers and link scanners on the way can also resolve a host.
+
+### Recursive content discovery and 403 bypass
+
+Content discovery recurses into every directory it finds (redirect to `dir/`, listing, 401/403), up to
+`--discovery-depth` levels (profile default: safe 0, standard 1, thorough 2). Each directory gets its
+own soft-404 calibration, and an NLP path classifier orders the recursion (admin, backup, config and
+source-control directories before static assets) and groups results by category. Every 401/403 path
+it finds goes to the access-control bypass check: 27 path-normalisation and header variants
+(`..;/`, `/%2e/`, `/./`, `/;/`, `%20`, case changes, encoded slashes, `X-Original-URL`, client-IP headers,
+...). Dot-segment variants are sent as raw request targets so the client does not normalise them away.
+With a request budget, recursion is limited and the 12 most productive variants are used.
+
+### NLP and ML identification
+
+- **Path classifier** (naive Bayes over path words, extension and character n-grams): admin, api, auth,
+  backup, config, source_control, log, debug, upload, docs, static, other.
+- **Product/version extractor** for free text (footers, about pages): context-scored. "Powered by"
+  and "version" raise confidence; "requires", "upgrade to" and "or newer" reject the match. It feeds the
+  CVE inventory for products the fixed patterns miss; matches below 0.8 are TENTATIVE.
+- **ML triage** context features: version-only CVE match, KEV, RCE, distribution back-port, NLP-derived
+  version, OOB protocol, re-verified, filter bypass, encoded value, path category. Priors penalise
+  banner-only CVE matches and favour OOB HTTP callbacks and re-verified findings.
+
 ### Resilience
 
 Per-host adaptive rate control (AIMD: halve on 429/503/timeouts, recover gradually), `Retry-After`
@@ -581,7 +620,7 @@ Extend detection without code: drop JSON files into a directory and pass `--sign
 
 ```bash
 pip install -e ".[all,dev]"
-pytest -q                       # 179 tests: e2e detection + safe twins, server/TLS audit, resilience/rate limits, context, agent, reporting/redaction, console/resume, NLP, CLI
+pytest -q                       # 189 tests: e2e detection + safe twins, server/TLS audit, resilience/rate limits, context, agent, reporting/redaction, console/resume, NLP, CLI
 ruff check webguard tests
 python tests/vulnapp.py         # run the vulnerable test app locally
 python benchmarks/juice_shop.py # benchmark against a running Juice Shop

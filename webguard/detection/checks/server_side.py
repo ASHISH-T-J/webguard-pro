@@ -233,10 +233,7 @@ async def ssrf(ctx: Context, point: InjectionPoint) -> None:
             tags=["ssrf"], request=ctx.curl(point, payload),
         ))
         return
-    # out-of-band: correlate later with the user's interaction server (interactsh/Collaborator)
-    if ctx.config.oob_domain:
-        t = token(10)
-        oob_payload = f"http://{t}.{ctx.config.oob_domain}/"
-        await ctx.send(point, oob_payload)
-        ctx.oob_log.append({"token": t, "url": point.url, "parameter": point.name,
-                            "location": point.location, "payload": oob_payload})
+    # out-of-band: a unique callback per input, correlated by the agent's OOB poller
+    from webguard.detection.checks.oob import blind_ssrf
+
+    await blind_ssrf(ctx, point)

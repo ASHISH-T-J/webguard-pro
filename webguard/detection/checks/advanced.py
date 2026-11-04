@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import random
 import re
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from webguard.detection.baseline import similarity
 from webguard.detection.checks.host import soft404
@@ -264,37 +264,74 @@ async def host_header(ctx: Context, url: str) -> None:
 # ------------------------------------------------------------------------------ 403 bypass
 
 
-def _bypass_variants(url: str) -> list[tuple[str, dict[str, str], str]]:
+def _bypass_variants(url: str) -> list[tuple[str, dict[str, str], str, str | None]]:
+    """(url, headers, description, raw request target or None) for each access-rule normalisation trick.
+
+    Variants with dot segments are sent as a raw request target: HTTP clients normalise ``/./`` away,
+    but the point of the test is to see whether the *server* does.
+    """
     p = urlsplit(url)
     path = p.path.rstrip("/") or "/"
+    bare = path.lstrip("/")
     root = f"{p.scheme}://{p.netloc}"
-    last = path.rsplit("/", 1)
-    variants = [
-        (root + path + "/.", {}, "trailing /."),
-        (root + "/" + path.lstrip("/") + "/", {}, "trailing slash"),
-        (root + "/%2e" + path, {}, "/%2e prefix"),
-        (root + path + "..;/", {}, "..;/ (Tomcat path parameter)"),
-        (root + path + ";/", {}, ";/ suffix"),
-        (root + "//" + path.lstrip("/"), {}, "double slash"),
-        (root + (last[0] + "/" + last[1].upper() if len(last) == 2 else path), {}, "case change"),
-        (root + "/", {"X-Original-URL": path}, "X-Original-URL"),
-        (root + "/", {"X-Rewrite-URL": path}, "X-Rewrite-URL"),
-        (url, {"X-Forwarded-For": "127.0.0.1"}, "X-Forwarded-For: 127.0.0.1"),
-        (url, {"X-Real-IP": "127.0.0.1"}, "X-Real-IP: 127.0.0.1"),
-        (url, {"X-Custom-IP-Authorization": "127.0.0.1"}, "X-Custom-IP-Authorization"),
+    head, _, last = path.rpartition("/")
+    q = f"?{p.query}" if p.query else ""
+    paths = [
+        (path + "/.", "trailing /.", True),
+        ("/" + bare + "/", "trailing slash", False),
+        ("/./" + bare, "/./ prefix", True),
+        ("/%2e/" + bare, "/%2e/ prefix", False),
+        (path + "..;/", "..;/ (Tomcat path parameter)", False),
+        (path + ";/", ";/ suffix", False),
+        ("/;/" + bare, "/;/ prefix", False),
+        ("/.;/" + bare, "/.;/ prefix", True),
+        ("//" + bare, "double slash", False),
+        (path + "/*", "/* suffix", False),
+        (path + "%20", "trailing %20", False),
+        (path + "%09", "trailing %09", False),
+        (path + "?", "empty query", False),
+        (path + "/%2e", "trailing /%2e", False),
+        (head + "/" + last.upper() if last else path, "case change (last segment)", False),
+        (path.upper(), "case change (whole path)", False),
+        ("/" + quote(bare, safe="/").replace("/", "%2f"), "encoded slashes", False),
     ]
-    return [(urlunsplit(urlsplit(u)._replace(query=p.query)), h, d) for u, h, d in variants]
+    out: list[tuple[str, dict[str, str], str, str | None]] = []
+    for variant, desc, raw in paths:
+        if variant == path:
+            continue
+        sep = "&" if "?" in variant and q else ""
+        target = variant + (sep + p.query if sep else q)
+        out.append((root + target, {}, desc, target if raw else None))
+    for name, value in (("X-Original-URL", path), ("X-Rewrite-URL", path)):
+        out.append((root + "/" + q, {name: value}, name, None))
+    for name in ("X-Forwarded-For", "X-Real-IP", "X-Custom-IP-Authorization", "X-Originating-IP", "X-Remote-IP",
+                 "X-Remote-Addr", "X-Client-IP", "True-Client-IP"):
+        out.append((url, {name: "127.0.0.1"}, f"{name}: 127.0.0.1", None))
+    return out
 
 
-async def forbidden_bypass(ctx: Context, url: str, blocked: Resp) -> None:
+# most productive first (frequency in public 403-bypass writeups); used when a request budget caps the variants
+BYPASS_ORDER = ("X-Original-URL", "X-Rewrite-URL", "..;/ (Tomcat path parameter)", "/%2e/ prefix", "trailing /.",
+                "double slash", ";/ suffix", "X-Forwarded-For: 127.0.0.1", "trailing slash", "/./ prefix",
+                "case change (last segment)", "trailing %20")
+
+
+def _ranked_variants(url: str, limit: int | None) -> list:
+    variants = _bypass_variants(url)
+    rank = {d: i for i, d in enumerate(BYPASS_ORDER)}
+    variants.sort(key=lambda v: rank.get(v[2], len(rank)))
+    return variants[:limit] if limit else variants
+
+
+async def forbidden_bypass(ctx: Context, url: str, blocked: Resp, limit: int | None = None) -> None:
     if ctx.has("access", url=url) or blocked.status not in (401, 403):
         return
     root = "{0.scheme}://{0.netloc}".format(urlsplit(url))
     fps = await soft404(ctx, root)
     home = await ctx.client.safe_get(root + "/")
-    for vurl, headers, desc in _bypass_variants(url):
+    for vurl, headers, desc, raw in _ranked_variants(url, limit):
         try:
-            r = await ctx.client.request("GET", vurl, headers=headers or None)
+            r = await ctx.client.request("GET", vurl, headers=headers or None, raw_path=raw)
         except Exception:
             continue
         if r is None or r.status != 200 or len(r.text) < 50 or not ctx.app_answered(r):
@@ -313,7 +350,8 @@ async def forbidden_bypass(ctx: Context, url: str, blocked: Resp) -> None:
             remediation="Enforce authorisation in the application on the canonical, normalised path; strip "
                         "X-Original-URL/X-Rewrite-URL and client-supplied IP headers at the edge.",
             cwe="CWE-863", owasp="A01:2021-Broken Access Control", detection=DIFFERENTIAL,
-            tags=["access-control", "403-bypass"], request=ctx.client.curl("GET", vurl, headers=headers or None),
+            tags=["access-control", "403-bypass"],
+            request=(ctx.client.curl("GET", vurl, headers=headers or None) + (" --path-as-is" if raw else "")),
         ))
         return
 

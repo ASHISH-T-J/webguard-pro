@@ -23,7 +23,7 @@ from webguard.models import Confidence, Finding
 HASH_DIM = 512
 PRIOR = {Confidence.CERTAIN: 0.95, Confidence.FIRM: 0.8, Confidence.TENTATIVE: 0.35}
 DETECTION_ADJ = {"signature": 0.0, "differential": -0.05, "timing": -0.1, "anomaly": -0.15, "passive": 0.0,
-                 "external": -0.05}
+                 "external": -0.05, "oob": 0.03}
 _TOKEN = re.compile(r"[a-z][a-z0-9_-]{2,30}")
 
 
@@ -51,7 +51,37 @@ def featurize(f: Finding) -> dict[int, float]:
             add(f"num:{f.check}:{name}", math.tanh(float(value) / 10.0))
     for tok in set(_TOKEN.findall(f"{f.title} {f.evidence[:300]}".lower())):
         add(f"tok:{tok}", 0.5)
+    for name in context_features(f):
+        add(name)
     return vec
+
+
+def context_features(f: Finding) -> list[str]:
+    """Structured evidence quality signals from the finding context (what an analyst looks at)."""
+    ctx = f.context or {}
+    out = []
+    c = ctx.get("cve") or {}
+    if f.check.startswith("cve:"):
+        out.append("ctx:version_only" if not c.get("verified") else "ctx:version_verified")
+        out += ["ctx:kev"] * bool(c.get("kev")) + ["ctx:rce"] * bool(c.get("rce"))
+        if "back-ported" in (f.evidence or ""):
+            out.append("ctx:distro_backport")
+        if "NLP match" in (f.evidence or ""):
+            out.append("ctx:nlp_version")
+    if ctx.get("oob"):
+        out += [f"ctx:oob:{p}" for p in ctx["oob"].get("protocols", [])]
+    verification = str(ctx.get("verification", "")).lower()
+    if "verified" in verification or "reproduced" in verification:
+        out.append("ctx:reverified")
+    if ctx.get("bypass"):
+        out.append("ctx:filter_bypass")
+    if ctx.get("value_encoding"):
+        out.append("ctx:encoded_value")
+    if f.url and f.check in ("exposure", "access", "server"):
+        from webguard.nlp.paths import classify_path
+
+        out.append(f"path:{classify_path(f.url)[0]}")
+    return out
 
 
 def _dot(w: list[float], x: dict[int, float]) -> float:
@@ -76,7 +106,13 @@ class TriageModel:
         return self.weights is not None
 
     def prior(self, f: Finding) -> float:
-        return max(0.01, min(0.99, PRIOR[f.confidence] + DETECTION_ADJ.get(f.detection, 0.0)))
+        p = PRIOR[f.confidence] + DETECTION_ADJ.get(f.detection, 0.0)
+        feats = context_features(f)
+        if "ctx:version_only" in feats:
+            p -= 0.15  # banner versions miss back-ports and custom builds: needs a patch-level check
+        if "ctx:reverified" in feats or "ctx:oob:http" in feats:
+            p += 0.05
+        return max(0.01, min(0.99, p))
 
     def predict(self, f: Finding) -> float:
         if not self.trained:
