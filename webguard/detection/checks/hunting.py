@@ -11,7 +11,8 @@ from webguard.detection.baseline import features, similarity
 from webguard.detection.context import Context, token
 from webguard.models import ANOMALY, Confidence, Finding, InjectionPoint, Severity
 
-VALIDATION = re.compile(r"(?i)invalid|not allowed|illegal|must be|is required|validation|malformed|bad request|"
+VALIDATION = re.compile(r"(?i)invalid|not allowed|illegal|must (?:be|start with|end with|contain)|is required|"
+                        r"validation|malformed|bad request|"
                         r"unexpected (?:value|character)|out of range|not a valid|unsupported")
 
 
@@ -45,6 +46,8 @@ async def anomaly_fuzz(ctx: Context, point: InjectionPoint) -> None:
         # nothing unusual, or the parameter rejects *any* non-trivial input (strict validation) - not a lead
         return
     server_errors = [h for h in hits if statuses.get(h.probe, 0) >= 500]
+    if len(hits) < 2 and not server_errors:
+        return  # one slightly different echo is noise; leads need repeated deviation or a server error
     sev = Severity.LOW if server_errors else Severity.INFO
     detail = "; ".join(
         f"{h.probe} (score {h.score:.1f}{', HTTP ' + str(statuses.get(h.probe)) if statuses.get(h.probe) else ''}: "

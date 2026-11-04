@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import html
 import json
+import posixpath
 import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 PASSWD = "root:x:0:0:root:/root:/bin/bash\ndaemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\n"
 ITEMS = {"1": "Blue widget", "2": "Red widget", "3": "Green widget"}
@@ -57,7 +58,15 @@ INDEX = """<html><head><title>Shop</title>
 <a href="/oauth/authorize?client_id=web&redirect_uri=https://shop.test/callback&response_type=code">sso</a>
 <a href="/safe/oauth/authorize?client_id=web&redirect_uri=https://shop.test/callback&response_type=code">safe sso</a>
 <a href="/waf/search?q=shoes">protected search</a>
-<a href="/filtered/item?id=1">filtered item</a> <a href="/safe/filtered/item?id=1">safe filtered item</a>
+<a href="/filtered/item?id=1">filtered item</a>
+<a href="/lfi/ext?file=about.png">lfi ext</a> <a href="/safe/lfi/ext?file=about.png">safe lfi ext</a>
+<a href="/lfi/start?file=/var/www/images/about.png">lfi start</a> <a href="/xss/decode?q=hi">xss decode</a>
+<a href="/safe/xss/decode?q=hi">safe xss decode</a> <a href="/data?data=MTAwMQ==">data</a> <a href="/safe/data?data=MTAwMQ==">safe data</a>
+<a href="/cmd/filter?host=127.0.0.1">cmd filter</a> <a href="/safe/cmd/filter?host=127.0.0.1">safe cmd filter</a>
+<a href="/fetch?url=https://trusted.example/logo.png">fetch</a> <a href="/safe/fetch?url=https://trusted.example/logo.png">safe fetch</a>
+<a href="/directory?user=alice">directory</a> <a href="/safe/directory?user=alice">safe directory</a>
+<a href="/lookup?name=alice">lookup</a> <a href="/safe/lookup?name=alice">safe lookup</a>
+<a href="/stock?productId=1">stock</a> <a href="/safe/stock?productId=1">safe stock</a> <a href="/render?tpl=hello">render</a> <a href="/safe/filtered/item?id=1">safe filtered item</a>
 <a href="/app">app</a> <a href="/safe/app">safe app</a> <a href="/track">track</a> <a href="/safe/track">safe track</a> <a href="/welcome">welcome</a> <a href="/safe/welcome">safe welcome</a>
 <a href="/admin">admin</a> <a href="/safe/admin">safe admin</a> <a href="/dom">dom</a> <a href="/safe/dom">safe dom</a>
 <form action="/profile/update" method="post"><input name="nickname" value="bob"><input type="submit"></form>
@@ -108,7 +117,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         for k, v in (headers or {}).items():
-            self.send_header(k, v)
+            # like real frameworks: header values that aren't Latin-1 are percent-encoded, not a crash
+            self.send_header(k, v if all(ord(c) < 256 for c in str(v)) else quote(str(v), safe=":/?&=#@%;,"))
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(data)
@@ -223,6 +233,73 @@ class Handler(BaseHTTPRequestHandler):
             js = f"document.getElementById('out').{sink} = decodeURIComponent(location.hash.slice(1));"
             return self._send(f"<html><body><div id=out></div><script>{js}</script></body></html>",
                               headers={"Set-Cookie": f"auth={TOKEN}; Path=/; HttpOnly; SameSite=Lax"})
+        # ---- PortSwigger-style input filters (vulnerable) and their safe twins
+        if p in ("/lfi/ext", "/safe/lfi/ext"):  # "validation of file extension with null byte bypass"
+            f = q.get("file", "")
+            if not f.split("\x00")[0].endswith(".png") and not f.endswith(".png"):
+                return self._send(page("<p>Filename must end with .png</p>"), 400)
+            if p == "/safe/lfi/ext":
+                return self._send(page("<pre>PNG image</pre>"))
+            path = posixpath.normpath("/var/www/images/" + f.split("\x00")[0])
+            return self._send(page(f"<pre>{PASSWD if path == '/etc/passwd' else 'PNG image'}</pre>"))
+        if p == "/lfi/start":  # "validation of start of path"
+            f = q.get("file", "")
+            if not f.startswith("/var/www/images/"):
+                return self._send(page("<p>Path must start with /var/www/images/</p>"), 400)
+            return self._send(page(f"<pre>{PASSWD if posixpath.normpath(f) == '/etc/passwd' else 'PNG image'}</pre>"))
+        if p in ("/xss/decode", "/safe/xss/decode"):  # sanitise THEN decode again (vulnerable) / decode then escape
+            v = q.get("q", "")
+            out = unquote(html.escape(v)) if p == "/xss/decode" else html.escape(unquote(v))
+            return self._send(page(f"<p>You searched: {out}</p>"))
+        if p in ("/data", "/safe/data"):  # parameter carries base64 data; the decoded value reaches SQL
+            import base64 as _b64
+            try:
+                raw = _b64.b64decode(q.get("data", "")).decode()
+            except Exception:
+                return self._send(page("<p>bad data</p>"), 400)
+            if p == "/data" and raw.count("'") % 2 == 1:
+                return self._send(page("You have an error in your SQL syntax; check the manual that corresponds "
+                                       "to your MySQL server version"), 500)
+            return self._send(page(f"<p>Record {html.escape(raw if raw.isdigit() else 'none')}</p>"))
+        if p in ("/cmd/filter", "/safe/cmd/filter"):  # blocks spaces and ';' but runs the command through a shell
+            host = q.get("host", "")
+            if re.search(r"[ ;]", host):
+                return self._send(page("<p>Invalid characters in host</p>"), 400)
+            out = f"PING {html.escape(host.split('|')[0])}: 64 bytes"
+            cmd = host.replace("${IFS}", " ")
+            m = re.search(r"[|&`$\n]+\s*\(?echo (\w+)\$\(\((\d+)\*(\d+)\)\)", cmd)
+            if m and p == "/cmd/filter":
+                out += f"\n{m.group(1)}{int(m.group(2)) * int(m.group(3))}"
+            return self._send(page(f"<pre>{out}</pre>"))
+        if p in ("/fetch", "/safe/fetch"):  # "SSRF with whitelist-based input filter" (substring check)
+            u = q.get("url", "")
+            allowed = urlsplit(u).hostname == "trusted.example" if p == "/safe/fetch" else "trusted.example" in u
+            if not allowed:
+                return self._send(page("<p>URL not allowed</p>"), 400)
+            if urlsplit(u).hostname == "example.com":  # simulated outbound fetch (no real network)
+                return self._send("<html><head><title>Example Domain</title></head><body>This domain is for use "
+                                  "in illustrative examples</body></html>")
+            return self._send(page("<p>fetched image</p>"))
+        if p in ("/directory", "/safe/directory"):  # LDAP filter (&(uid=<user>)(objectClass=person))
+            u = q.get("user", "")
+            if p == "/directory" and (u.count("(") != u.count(")") or re.search(r"[*\\]\)|\)\(", u)):
+                return self._send(page("javax.naming.directory.InvalidSearchFilterException: Bad search filter"), 500)
+            return self._send(page("<p>1 entry</p>"))
+        if p in ("/lookup", "/safe/lookup"):  # XPath //user[name='<name>']
+            n = q.get("name", "")
+            if p == "/lookup" and n.count("'") % 2 == 1:
+                return self._send(page("javax.xml.xpath.XPathExpressionException: Invalid predicate"), 500)
+            return self._send(page("<p>user found</p>"))
+        if p in ("/stock", "/safe/stock"):  # productId embedded into a server-side XML document (XInclude on)
+            v = q.get("productId", "")
+            if p == "/stock" and "xi:include" in v and "file:///etc/passwd" in v:
+                return self._send(f"<result>{PASSWD}</result>", ctype="application/xml")
+            return self._send("<result>12 units</result>", ctype="application/xml")
+        if p == "/render":  # template engine that errors on template syntax (no arithmetic reflection)
+            t = q.get("tpl", "")
+            if re.search(r"\{\{|\$\{|<%", t):
+                return self._send(page("jinja2.exceptions.TemplateSyntaxError: unexpected '<'"), 500)
+            return self._send(page(f"<p>{html.escape(t)}</p>"))
         if p in ("/filtered/item", "/safe/filtered/item"):  # application-level blacklist (not a WAF)
             raw = q.get("id", "")
             if re.search(r"[ '\"]", raw):

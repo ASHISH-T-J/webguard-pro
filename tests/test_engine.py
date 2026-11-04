@@ -55,6 +55,17 @@ def _found(result, base, check, path, param=None):
     ("access", "/api/admin/config", None),    # admin API answering anonymous requests
     ("sqli", "/track", "User-Agent"),         # header value logged into SQL
     ("sqli", "/filtered/item", "id"),         # app blacklist (spaces/quotes) defeated by auto-tamper
+    # PortSwigger / HackTricks filter-bypass scenarios, defeated by per-class encoding variants
+    ("lfi", "/lfi/ext", "file"),              # extension validation -> null byte
+    ("lfi", "/lfi/start", "file"),            # start-of-path validation -> path prefix
+    ("xss", "/xss/decode", "q"),              # sanitise-then-decode -> double URL encoding
+    ("sqli", "/data", "data"),                # SQLi inside a base64-encoded parameter value
+    ("cmdi", "/cmd/filter", "host"),          # spaces/';' blocked -> ${IFS}
+    ("ssrf", "/fetch", "url"),                # substring allow-list -> userinfo
+    ("ldapi", "/directory", "user"),
+    ("xpathi", "/lookup", "name"),
+    ("xxe", "/stock", "productId"),           # XInclude
+    ("ssti", "/render", "tpl"),               # template-error polyglot lead
     ("xss", "/welcome", "Referer"),           # header value rendered into HTML
     ("xss", "/welcome", "theme"),             # cookie value rendered into an attribute
     ("exposure", "/static/legacy.js.map", None),  # source map exposed
@@ -76,7 +87,9 @@ def test_detects_vulnerability(scan_result, check, path, param):
                                   "/safe/api/login", "/safe/users/search", "/safe/api/xml", "/safe/admin",
                                   "/safe/reset", "/safe/api/users/1", "/safe/dom", "/safe/api/admin/config",
                                   "/safe/track", "/safe/welcome", "/safe/app",
-                                  "/safe/account", "/safe/oauth/authorize", "/safe/pp", "/safe/filtered/item"])
+                                  "/safe/account", "/safe/oauth/authorize", "/safe/pp", "/safe/filtered/item",
+                                  "/safe/lfi/ext", "/safe/xss/decode", "/safe/data", "/safe/cmd/filter",
+                                  "/safe/fetch", "/safe/directory", "/safe/lookup", "/safe/stock"])
 def test_no_false_positives_on_safe_twins(scan_result, path):
     base, result = scan_result
     hits = [f for f in result.findings if f.url.replace(base, "") == path]
@@ -184,3 +197,18 @@ def test_poc_screenshots_and_evidence(scan_result, tmp_path):
     assert any(f.check == "lfi" for f in by_kind.get("live-response", []))
     auth = next(f for f in result.findings if f.check == "auth")
     assert '"token"' in auth.context["http_response"]  # replayed request captured the real response
+
+
+def test_bypass_findings_name_the_technique_and_verify(scan_result):
+    base, result = scan_result
+    byp = {f.url.replace(base, ""): f for f in result.findings if any(t.startswith("bypass:") for t in f.tags)}
+    assert "null-byte-extension" in byp["/lfi/ext"].title
+    assert "path-prefix" in byp["/lfi/start"].title
+    assert "ifs-whitespace" in byp["/cmd/filter"].title and "${IFS}" in byp["/cmd/filter"].payload
+    assert "allowlist-userinfo" in byp["/fetch"].title
+    assert byp["/lfi/ext"].context["bypass"]["technique_source"].startswith("PortSwigger")
+    for f in byp.values():  # independently re-verified with the same variant
+        if f.check in ("lfi", "cmdi", "xss"):
+            assert "verified" in f.tags, f.title
+    enc = next(f for f in result.findings if f.url.endswith("/data") and f.check == "sqli")
+    assert enc.context["value_encoding"] == "base64" and "inside base64-encoded value" in enc.title

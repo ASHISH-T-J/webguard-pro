@@ -12,7 +12,7 @@ import math
 import re
 import statistics
 from dataclasses import dataclass, field
-from urllib.parse import quote, quote_plus
+from urllib.parse import quote, quote_plus, unquote
 
 from webguard.http import Resp
 
@@ -33,7 +33,9 @@ _ERROR_WORDS = re.compile(
 
 def _variants(value: str) -> list[str]:
     """Forms in which a reflected value commonly appears (raw, HTML-escaped, URL-encoded)."""
-    out = {value, html.escape(value), html.escape(value, quote=False), quote(value), quote_plus(value)}
+    dec = unquote(value)
+    out = {value, html.escape(value), html.escape(value, quote=False), quote(value), quote_plus(value),
+           dec, html.escape(dec), html.escape(dec, quote=False)}
     return sorted((v for v in out if v), key=len, reverse=True)
 
 

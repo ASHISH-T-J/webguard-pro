@@ -3,19 +3,35 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import html as _html
 import logging
 import random
+import re
 import string
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import quote, urlencode
 
 from webguard.config import ScanConfig
 from webguard.detection.baseline import Baseline
+from webguard.detection.encoding import Raw, Variant, encode_context
 from webguard.http import HttpClient, OutOfScopeError, Resp
 from webguard.models import Finding, InjectionPoint
 from webguard.signatures import SignatureDB
 
 log = logging.getLogger("webguard.detect")
+
+
+# the input-filter bypass variant active for the current test (per asyncio task, so concurrent tests are isolated)
+ACTIVE_VARIANT: contextvars.ContextVar[Variant | None] = contextvars.ContextVar("webguard_variant", default=None)
+# value encoding of the point currently under test (base64/hex/url), recorded on findings for verification
+ACTIVE_ENCODING: contextvars.ContextVar[str] = contextvars.ContextVar("webguard_encoding", default="")
+FILTER_HINT = re.compile(r"(?i)invalid (?:characters?|input|value|parameter|request|file ?name|path)|not allowed|"
+                         r"illegal (?:characters?|input)|forbidden characters?|bad input|disallowed|"
+                         r"hack(?:ing)? attempt|possible (?:attack|injection)|detected (?:sql|injection)|"
+                         r"path traversal|must (?:start|end) with")
+STRIP_TOKENS = ("../", "..\\", "<", ">", "'", '"', "{{", "${", ";", "|", "`", "$(")
 
 
 def token(n: int = 8) -> str:
@@ -39,11 +55,26 @@ class Context:
         self.oob_log: list[dict[str, str]] = []
         # inputs where a WAF / CDN challenge / rate limiter answered instead of the application
         self.obstructed: dict[str, set[str]] = {}
+        self.obstructed_keys: set[tuple] = set()
+        # evidence that the application filters input for a point (validation errors, stripped characters)
+        self.filter_signals: dict[tuple, int] = {}
+        self.escaped_points: set[tuple] = set()  # reflections came back HTML-escaped (decode-order bugs possible)
         self._baselines: dict[tuple, Baseline | None] = {}
         self._baseline_locks: dict[tuple, asyncio.Lock] = {}
 
     # ------------------------------------------------------------------ findings
     def report(self, finding: Finding) -> None:
+        variant = ACTIVE_VARIANT.get()
+        if variant is not None:
+            finding.title += f" - input filter bypassed ({variant.name})"
+            finding.tags = [*finding.tags, f"bypass:{variant.name}"]
+            finding.context = {**finding.context, "bypass": {"variant": variant.name, "technique_source": variant.source}}
+            if finding.payload:
+                finding.payload = variant.transform(finding.payload)
+        enc = ACTIVE_ENCODING.get()
+        if enc and finding.parameter:
+            finding.title += f" (inside {enc}-encoded value)"
+            finding.context = {**finding.context, "value_encoding": enc}
         fp = finding.fingerprint
         existing = self.findings.get(fp)
         if existing and (existing.confidence, existing.severity) >= (finding.confidence, finding.severity):
@@ -77,19 +108,48 @@ class Context:
             return True
         if point is not None:
             self.obstructed.setdefault(rc.kind, set()).add(f"{point.method} {point.url} [{point.name}] {check}".strip())
+            self.obstructed_keys.add(point.key)
         return False
+
+    def _observe_filter(self, point: InjectionPoint, value: str, resp: Resp) -> None:
+        """Remember application-level filtering for this input (enables bypass variants)."""
+        from webguard.analysis.context import classify
+
+        if resp is None or not classify(resp).is_app_response:
+            return
+        hit = resp.status in (400, 406, 422) or (resp.status < 500 and FILTER_HINT.search(resp.text[:5000]))
+        if any(c in value for c in "<>\"'") and value not in resp.text and _html.escape(value) in resp.text:
+            self.escaped_points.add(point.key)
+        if not hit and len(value) >= 6 and value not in resp.text and _html.escape(value) not in resp.text \
+                and _html.escape(value, quote=False) not in resp.text:
+            for tok in STRIP_TOKENS:  # our value came back with the dangerous characters removed
+                parts = value.split(tok)
+                # the token must sit BETWEEN surviving text, otherwise a truncated/escaped echo looks the same
+                if len(parts) >= 2 and len(parts[0]) >= 2 and len(parts[-1]) >= 2 and "".join(parts) in resp.text:
+                    hit = True
+                    break
+        if hit and value != point.original:
+            self.filter_signals[point.key] = self.filter_signals.get(point.key, 0) + 1
 
     # ------------------------------------------------------------------ requests
     def _build(self, point: InjectionPoint, value: str) -> dict[str, Any]:
+        variant = ACTIVE_VARIANT.get()
+        if variant is not None and value != point.original:
+            value = variant.transform(value)
+        if point.encoding:  # encoded value context: the app decodes this parameter before using it
+            value = encode_context(str(value), point.encoding)
         method = point.method.upper()
         kw: dict[str, Any] = {"method": method, "url": point.url}
-        if point.location in ("query", "path"):
+        in_query = point.location in ("query", "path") or (point.location == "form" and method == "GET")
+        if in_query and isinstance(value, Raw):
+            # wire-exact value: place it in the query string ourselves so it isn't percent-encoded again
+            others = urlencode({k: v for k, v in point.params.items() if k != point.name})
+            raw_pair = f"{quote(point.name, safe='')}={value}"
+            kw["url"] = point.url + "?" + "&".join(x for x in (others, raw_pair) if x)
+        elif in_query:
             kw["params"] = point.with_value(value)
         elif point.location == "form":
-            if method == "GET":
-                kw["params"] = point.with_value(value)
-            else:
-                kw["data"] = point.with_value(value)
+            kw["data"] = point.with_value(value)
         elif point.location == "json":
             kw["json"] = _json_value(point.with_value(value), point.params)
         elif point.location == "header":
@@ -102,11 +162,14 @@ class Context:
                    follow_redirects: bool = False) -> Resp | None:
         kw = self._build(point, value)
         try:
-            return await self.client.request(
+            resp = await self.client.request(
                 kw.pop("method"), kw.pop("url"), timeout=timeout, follow_redirects=follow_redirects, **kw
             )
         except OutOfScopeError:
             return None
+        if resp is not None:
+            self._observe_filter(point, str(value), resp)
+        return resp
 
     def curl(self, point: InjectionPoint, value: str) -> str:
         kw = self._build(point, value)

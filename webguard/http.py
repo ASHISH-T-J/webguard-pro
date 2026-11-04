@@ -37,6 +37,7 @@ from webguard.scope import Scope
 log = logging.getLogger("webguard.http")
 
 RETRY_STATUS = {429, 502, 503, 504}
+CONNECT_LEVEL = {"dns", "refused", "connect", "connect_timeout", "tls"}
 
 
 class OutOfScopeError(Exception):
@@ -294,9 +295,11 @@ class HttpClient:
             st.open_until = time.monotonic() + st.cooldown
             st.decrease("circuit open", 0.5)
             log.warning("host unhealthy (%s x%d) - pausing %.0fs", kind, st.consecutive_failures, st.cooldown)
-            st.cooldown = min(st.cooldown * 2, 120)
+            st.cooldown = min(st.cooldown * 2, 120 if kind in CONNECT_LEVEL else 20)
             st.consecutive_failures = 4  # half-open: a few more failures re-open quickly
-            if st.trips >= 5 or kind in ("dns", "refused") and st.trips >= 2:
+            # only connection-level failures mean "host down"; resets / protocol errors / read timeouts are usually
+            # caused by a specific payload and must never end the scan for the whole host
+            if kind in CONNECT_LEVEL and (st.trips >= 3 or (kind in ("dns", "refused") and st.trips >= 2)):
                 st.dead = True
                 log.warning("giving up on unresponsive host")
 

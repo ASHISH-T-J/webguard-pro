@@ -126,8 +126,8 @@ async def run(ctx: Context, point: InjectionPoint) -> None:
             poc = _exec_payload(kind, payload, canary, c2)
             context = {}
             if poc and point.method.upper() == "GET" and point.location in ("query", "form"):
-                context["poc_url"] = str(ctx.client._client.build_request(
-                    "GET", point.url, params=point.with_value(poc)).url)
+                kw = ctx._build(point, poc)  # same variant/encoding pipeline as the confirmed request
+                context["poc_url"] = str(ctx.client._client.build_request("GET", kw["url"], params=kw.get("params")).url)
                 context["poc_payload"] = poc
             ctx.report(Finding(
                 context=context,

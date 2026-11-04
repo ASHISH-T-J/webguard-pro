@@ -159,6 +159,39 @@ payload obfuscation, CDN challenge solving, fingerprint spoofing, IP rotation or
 assessments behind a WAF, ask the owner to allow-list your source IP or provide an origin/staging
 endpoint, which is the standard practice in authorised engagements and tests the application itself.
 
+### Technique catalogue (OWASP WSTG · PortSwigger Academy · HackTricks)
+
+For every input the agent first runs the **basic** proof-based test. If it fails, the application (not a
+WAF/CDN/rate limiter) answered, and there is a reason to suspect a filter, the same test is re-run through
+the **bypass variants that make sense for that bug class**. A hit is reported with the variant and its
+source, e.g. *"Path traversal / local file inclusion - input filter bypassed (null-byte-extension)"*, and
+is re-verified with the same variant.
+
+| Class | WSTG | Proof (basic test) | Bypass / encoding variants | Technique sources |
+|---|---|---|---|---|
+| Path traversal / LFI | ATHZ-01 | `/etc/passwd`, `win.ini`, `php://filter` contents | nested `....//`, double URL encoding, overlong UTF-8 `..%c0%af` (sent raw), required path prefix, null byte + required extension, `\` separators | PortSwigger path-traversal labs (non-recursive strip, superfluous decode, start-of-path, extension + null byte); HackTricks |
+| SQL injection | INPV-05 | DBMS errors, boolean differential, time-based | sqlmap tamper chains (`space2comment`, `randomcase`, `space2tab`, `equaltolike`, `symboliclogical`, `versioned`, …), double URL, full-width Unicode, `\uXXXX` | sqlmap, OWASP SQLi filter evasion |
+| XSS | INPV-01 | new DOM node/attribute parsed from the response | double URL encoding, HTML entities (decode-after-sanitise), full-width Unicode (NFKC), JS `\uXXXX`, case variation | PortSwigger XSS contexts, OWASP XSS Filter Evasion, HackTricks |
+| OS command injection | INPV-12 | shell arithmetic echo / timing | `${IFS}` for spaces, quote insertion (`e''cho`), double URL | HackTricks command injection |
+| SSTI | INPV-18 | random arithmetic in 10 syntaxes; error polyglot `${{<%[%'"}}%\` | double URL, HTML entities, full-width | PortSwigger SSTI methodology |
+| SSRF | INPV-19 | server fetches `example.com` (in-band) / OOB token | allow-list parsing: `trusted@evil`, `evil#trusted`, `evil?trusted`, double URL | PortSwigger SSRF whitelist/blacklist labs, HackTricks URL format bypass |
+| Open redirect / OAuth | CLNT-04 | `Location`/meta/JS to a random host | allow-list bypasses, double URL, backslash, full-width | PortSwigger OAuth labs, HackTricks |
+| CRLF | INPV-15 | injected response header present | CR/LF/`\u560a`, double URL | OWASP |
+| LDAP injection | INPV-06 | LDAP filter errors | - | OWASP WSTG |
+| XPath injection | INPV-09 | XPath errors | - | OWASP WSTG |
+| XXE / XInclude | INPV-07 | external entity / `xi:include` file read | - | PortSwigger XXE labs |
+| NoSQL injection | INPV-05.6 | `$ne`/`$eq`/`$regex` differential, Mongo errors | - | OWASP, PortSwigger NoSQLi |
+
+**Encoded parameter values.** Parameters whose value is base64, base64url, hex or URL-encoded (e.g.
+`?data=MTAwMQ==`) are tested *inside* the decoded value and re-encoded - findings are labelled
+"(inside base64-encoded value)". This fixes a common false negative rather than bypassing anything.
+
+**When variants run** (keeps them fast and quiet): never when a WAF/CDN/rate limiter answered; for
+classes the parameter's meaning strongly suggests (file → LFI, URL → SSRF, redirect → open redirect,
+command → command injection, first two variants only); for XSS when reflections come back HTML-escaped
+(decode-order bugs, two variants); and for any plausible class once the application showed filtering
+(validation errors such as "must end with .png", or dangerous characters stripped from an echo).
+
 ### Automatic tamper chains (application input filters)
 
 When the basic SQL injection tests fail **and the application itself** reacts like an input blacklist
@@ -313,7 +346,7 @@ vulnerabilities reachable without an account in classes WebGuard tests (see
 
 | Run | Ground truth found | Requests | Time | MEDIUM+ findings outside ground truth |
 |---|---|---|---|---|
-| `assess`, no budget | **15 / 15** | 5,248 | 239 s | 0 |
+| `assess`, no budget | **15 / 15** | 5,718 | 235 s | 0 |
 | `assess --budget-requests 2000` | 13 / 15 | 2,029 | 181 s | 0 |
 | `assess --budget-requests 1000` | 12 / 15 (all critical/high found) | 1,141 | 161 s | 0 |
 | v2 scanner (before the agent) | 3 / 15 (metrics, headers, the leaked hashes - reported as 5 separate "generic password" secrets); only 3 injectable inputs mapped | 440 | 11 s | 0 |
@@ -338,9 +371,10 @@ build strips `<`/`>` from that input (verified manually). Run your own targets b
 The Claude/Ollama engines were exercised against a mocked SDK / unreachable server in tests only (no API
 key in the build environment); the numbers above use the local reasoner.
 
-**Built-in vulnerable app** (`tests/vulnapp.py`) - 34 vulnerable test cases across 24 finding classes
-(including header/cookie injection, source maps, cache deception, OAuth, prototype pollution and a
-simulated Cloudflare-style WAF), with 20 *safe twins* that must not be reported. Full assessment: all
+**Built-in vulnerable app** (`tests/vulnapp.py`) - 45 vulnerable test cases across 27 finding classes
+(including header/cookie injection, source maps, cache deception, OAuth, prototype pollution, PortSwigger-
+style input filters defeated by encoding variants, a base64-encoded parameter, LDAP/XPath/XInclude and a
+simulated Cloudflare-style WAF), with 29 *safe twins* that must not be reported. Full assessment: all
 detected, 0 false positives on the safe twins, WAF-blocked inputs reported as NOT TESTED, every injection
 finding independently re-verified with HTTP evidence attached.
 
@@ -422,7 +456,7 @@ Extend detection without code: drop JSON files into a directory and pass `--sign
 
 ```bash
 pip install -e ".[all,dev]"
-pytest -q                       # 128 tests: e2e detection + safe twins, resilience, context, agent, budget, NLP, reasoners, CLI
+pytest -q                       # 153 tests: e2e detection + safe twins, resilience, context, agent, budget, NLP, reasoners, CLI
 ruff check webguard tests
 python tests/vulnapp.py         # run the vulnerable test app locally
 python benchmarks/juice_shop.py # benchmark against a running Juice Shop

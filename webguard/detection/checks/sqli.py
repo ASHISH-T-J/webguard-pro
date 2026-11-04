@@ -6,7 +6,7 @@ import random
 import re
 
 from webguard.detection.baseline import similarity
-from webguard.detection.context import Context
+from webguard.detection.context import ACTIVE_VARIANT, Context
 from webguard.detection.tamper import AUTO_CHAINS, apply_tamper
 from webguard.models import DIFFERENTIAL, SIGNATURE, TIMING, Confidence, Finding, InjectionPoint, Severity
 
@@ -84,6 +84,8 @@ async def run(ctx: Context, point: InjectionPoint) -> None:
     # Basics failed. If the APPLICATION reacted like an input blacklist (not a WAF/CDN), try tamper chains.
     if not ctx.config.auto_tamper or ctx.config.tamper or signals["obstructed"] or not signals["filtered"]:
         return
+    if ACTIVE_VARIANT.get() is not None:
+        return  # an encoding variant is already being tried; don't multiply it by every tamper chain
     for chain in AUTO_CHAINS:
         if await _detect(ctx, point, base, chain, {"filtered": 0, "obstructed": 0}, timing=False,
                          label=f" - input filter bypassed with tamper {'+'.join(chain)}"):

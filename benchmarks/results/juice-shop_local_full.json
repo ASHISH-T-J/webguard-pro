@@ -2,8 +2,8 @@
   "target": "OWASP Juice Shop (bkimminich/juice-shop:latest)",
   "reasoner": "local",
   "budget_requests": null,
-  "seconds": 238.9,
-  "requests": 5248,
+  "seconds": 235.0,
+  "requests": 5718,
   "recall": "15/15",
   "ground_truth": {
     "SQL injection in product search (/rest/products/search?q)": true,
@@ -24,11 +24,11 @@
   },
   "findings": [
     "CRITICAL CERTAIN Authentication bypass via SQL injection @ http://127.0.0.1:3000/rest/user/login email",
-    "HIGH CERTAIN DOM-based cross-site scripting (SPA route #/change-password param q) @ http://127.0.0.1:3000/ q",
+    "HIGH CERTAIN DOM-based cross-site scripting (SPA route #/search param q) @ http://127.0.0.1:3000/ q",
     "HIGH CERTAIN Credentials / password hashes exposed in API response @ http://127.0.0.1:3000/rest/memories ",
     "HIGH CERTAIN Credentials / password hashes exposed in API response @ http://127.0.0.1:3000/support/logs/audit.json ",
     "HIGH FIRM SQL injection (error-based, SQLite) @ http://127.0.0.1:3000/rest/products/search q",
-    "MEDIUM CERTAIN JWT weaknesses: sensitive claims in payload @ http://127.0.0.1:3000/#jwt-c2ea81b7 ",
+    "MEDIUM CERTAIN JWT weaknesses: sensitive claims in payload @ http://127.0.0.1:3000/#jwt-ea41786e ",
     "MEDIUM CERTAIN Open redirect @ http://127.0.0.1:3000/redirect to",
     "MEDIUM FIRM Administrative/internal API accessible without authentication @ http://127.0.0.1:3000/rest/admin/application-configuration ",
     "MEDIUM FIRM Bulk personal data exposed in API response @ http://127.0.0.1:3000/rest/memories#pii ",
@@ -98,29 +98,29 @@
         "forbidden_bypass:http://127.0.0.1:3000/ftp/suspicious_errors.yml",
         "cors:http://127.0.0.1:3000/",
         "headers:http://127.0.0.1:3000",
+        "forbidden_bypass:http://127.0.0.1:3000/api/Cards",
         "forbidden_bypass:http://127.0.0.1:3000/api/Complaints",
         "forbidden_bypass:http://127.0.0.1:3000/rest/2fa/status",
-        "forbidden_bypass:http://127.0.0.1:3000/rest/image-captcha/",
-        "forbidden_bypass:http://127.0.0.1:3000/rest/wallet/balance"
+        "forbidden_bypass:http://127.0.0.1:3000/rest/image-captcha/"
       ],
-      "observation": "18 test(s), 544 requests; 6 new finding(s): INFO Unlinked content discovered @ /; INFO security.txt present @ /.well-known/security.txt; LOW Prometheus metrics exposed @ /metrics; INFO Swagger UI / API documentation exposed @ /api-docs/; INFO Missing security headers @ /; LOW CORS allows any origin (*) on API @ /"
+      "observation": "18 test(s), 545 requests; 6 new finding(s): INFO Unlinked content discovered @ /; INFO Swagger UI / API documentation exposed @ /api-docs/; INFO Missing security headers @ /; LOW Prometheus metrics exposed @ /metrics; INFO security.txt present @ /.well-known/security.txt; LOW CORS allows any origin (*) on API @ /"
     },
     {
       "step": 4,
       "phase": "config",
       "engine": "local",
-      "thought": "Configuration & deployment management: 10 candidate test(s). Prioritising by likelihood x impact. [forbidden_bypass http://127.0.0.1:3000/api/Addresss] access-controlled resource (HTTP 401) - try path/header bypasses. [forbidden_bypass http://127.0.0.1:3000/api/BasketItems] access-controlled resource (HTTP 401) - try path/header bypasses. [forbidden_bypass http://127.0.0.1:3000/api/Cards] access-controlled resource (HTTP 401) - try path/header bypasses. (+7 more)",
+      "thought": "Configuration & deployment management: 10 candidate test(s). Prioritising by likelihood x impact. [forbidden_bypass http://127.0.0.1:3000/api/Addresss] access-controlled resource (HTTP 401) - try path/header bypasses. [forbidden_bypass http://127.0.0.1:3000/api/BasketItems] access-controlled resource (HTTP 401) - try path/header bypasses. [forbidden_bypass http://127.0.0.1:3000/api/Users] access-controlled resource (HTTP 401) - try path/header bypasses. (+7 more)",
       "actions": [
         "forbidden_bypass:http://127.0.0.1:3000/api/Addresss",
         "forbidden_bypass:http://127.0.0.1:3000/api/BasketItems",
-        "forbidden_bypass:http://127.0.0.1:3000/api/Cards",
         "forbidden_bypass:http://127.0.0.1:3000/api/Users",
         "forbidden_bypass:http://127.0.0.1:3000/rest/basket/1",
         "forbidden_bypass:http://127.0.0.1:3000/rest/basket/1/checkout",
         "forbidden_bypass:http://127.0.0.1:3000/rest/basket/1/coupon/1",
         "forbidden_bypass:http://127.0.0.1:3000/rest/saveLoginIp",
         "forbidden_bypass:http://127.0.0.1:3000/rest/user/authentication-details/",
-        "forbidden_bypass:http://127.0.0.1:3000/rest/user/change-password?current="
+        "forbidden_bypass:http://127.0.0.1:3000/rest/user/change-password?current=",
+        "forbidden_bypass:http://127.0.0.1:3000/rest/wallet/balance"
       ],
       "observation": "10 test(s), 160 requests; no new findings"
     },
@@ -143,7 +143,7 @@
         "auth_bypass:POST http://127.0.0.1:3000/rest/user/login [json]",
         "passive_analysis:all-responses"
       ],
-      "observation": "2 test(s), 3 requests; 17 new finding(s): LOW Directory listing enabled @ /support/logs; LOW Directory listing enabled @ /.well-known; HIGH Credentials / password hashes exposed in API response @ /rest/memories; HIGH Credentials / password hashes exposed in API response @ /support/logs/audit.json; INFO Exposed secret: Internal IP Address @ /; INFO Exposed secret: Internal IP Address @ /"
+      "observation": "2 test(s), 3 requests; 17 new finding(s): LOW Directory listing enabled @ /.well-known/csaf; LOW Sensitive value transmitted in URL @ /api/Challenges/ [key]; CRITICAL Authentication bypass via SQL injection @ /rest/user/login [email]; LOW Directory listing enabled @ /ftp; LOW Directory listing enabled @ /encryptionkeys; LOW Directory listing enabled @ /.well-known"
     },
     {
       "step": 7,
@@ -177,7 +177,7 @@
         "inject:GET http://127.0.0.1:3000/login [header] User-Agent",
         "inject:GET http://127.0.0.1:3000/order-history [header] User-Agent"
       ],
-      "observation": "25 test(s), 1991 requests; 4 new finding(s): LOW Anomalous input handling (server errors) @ /rest/user/security-question [email]; MEDIUM Open redirect @ /redirect [to]; LOW Anomalous input handling (server errors) @ /api/Challenges/ [key]; HIGH SQL injection (error-based, SQLite) @ /rest/products/search [q]"
+      "observation": "25 test(s), 2352 requests; 4 new finding(s): LOW Anomalous input handling (server errors) @ /api/Challenges/ [key]; HIGH SQL injection (error-based, SQLite) @ /rest/products/search [q]; LOW Anomalous input handling (server errors) @ /rest/user/security-question [email]; MEDIUM Open redirect @ /redirect [to]"
     },
     {
       "step": 8,
@@ -211,7 +211,7 @@
         "inject:PUT http://127.0.0.1:3000/rest/continue-code-fixIt/apply/ [json] id",
         "inject:PUT http://127.0.0.1:3000/rest/continue-code/apply/ [json] id"
       ],
-      "observation": "25 test(s), 963 requests; no new findings"
+      "observation": "25 test(s), 1091 requests; no new findings"
     },
     {
       "step": 9,
@@ -245,7 +245,7 @@
         "inject:GET http://127.0.0.1:3000/login [header] X-Forwarded-For",
         "inject:GET http://127.0.0.1:3000/order-history [header] X-Forwarded-For"
       ],
-      "observation": "25 test(s), 775 requests; no new findings"
+      "observation": "25 test(s), 789 requests; no new findings"
     },
     {
       "step": 10,
@@ -265,7 +265,7 @@
         "inject:PUT http://127.0.0.1:3000/rest/basket/1/coupon/1 [json] id",
         "inject:PUT http://127.0.0.1:3000/rest/basket/1/coupon/1 [json] quantity"
       ],
-      "observation": "11 test(s), 218 requests; no new findings"
+      "observation": "11 test(s), 232 requests; no new findings"
     },
     {
       "step": 11,
@@ -281,7 +281,7 @@
         "cache_deception:http://127.0.0.1:3000/order-summary",
         "cache_deception:http://127.0.0.1:3000/orders"
       ],
-      "observation": "7 test(s), 289 requests; 1 new finding(s): HIGH DOM-based cross-site scripting (SPA route #/change-password param q) @ / [q]"
+      "observation": "7 test(s), 241 requests; 1 new finding(s): HIGH DOM-based cross-site scripting (SPA route #/search param q) @ / [q]"
     },
     {
       "step": 12,
@@ -305,7 +305,7 @@
         "risk-scoring",
         "ml-triage"
       ],
-      "observation": "28 findings -> 28 root-cause issues, 3 attack chain(s); WSTG coverage 32/34 areas tested, 14 vulnerable. Coverage gap: 8 authenticated endpoint(s) need credentials."
+      "observation": "28 findings -> 28 root-cause issues, 3 attack chain(s); WSTG coverage 34/36 areas tested, 14 vulnerable. Coverage gap: 8 authenticated endpoint(s) need credentials."
     }
   ],
   "facts": [
@@ -324,7 +324,7 @@
     "grep[dom-sinks] location assignment: location=p$1(dv) (1 location(s))",
     "grep[dom-sinks] location assignment: location=p(Cl) (1 location(s))",
     "grep[dom-sinks] location assignment: location=p(Rt$1) (1 location(s))",
-    "Content discovery on http://127.0.0.1:3000: 10 unlinked path(s), 38 new URL(s) mapped",
+    "Content discovery on http://127.0.0.1:3000: 10 unlinked path(s), 39 new URL(s) mapped",
     "8 endpoint(s) answered 401/403 and were not fuzzed without a session - re-run with credentials (-H 'Authorization: ...' / --cookie) for full coverage: GET /rest/user/change-password, POST /rest/2fa/disable, POST /rest/2fa/setup, POST /rest/2fa/verify, POST /rest/basket/1/checkout, POST /rest/deluxe-membership, POST /rest/user/reset-password, PUT /rest/basket/1/coupon/1"
   ]
 }

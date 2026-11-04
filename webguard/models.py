@@ -63,15 +63,19 @@ class InjectionPoint:
     name: str  # parameter name
     params: dict[str, str] = field(default_factory=dict)  # all params with original values
     source: str = "crawl"  # where it was discovered (crawl, form, js, wayback, param-discovery)
+    # value context: the parameter carries encoded data (base64 / base64url / hex / url). params[name] then
+    # holds the DECODED original; every injected value is re-encoded before sending.
+    encoding: str = ""
 
     @property
     def original(self) -> str:
         return self.params.get(self.name, "")
 
     @property
-    def key(self) -> tuple[str, str, str, str]:
+    def key(self) -> tuple[str, ...]:
         parts = urlsplit(self.url)
-        return (self.method.upper(), f"{parts.scheme}://{parts.netloc}{parts.path}", self.location, self.name)
+        base = (self.method.upper(), f"{parts.scheme}://{parts.netloc}{parts.path}", self.location, self.name)
+        return base + (self.encoding,) if self.encoding else base
 
     def with_value(self, value: str) -> dict[str, str]:
         data = dict(self.params)

@@ -67,6 +67,31 @@ async def ssti(ctx: Context, point: InjectionPoint) -> None:
         ))
         return
 
+    # PortSwigger detection polyglot: template engines that don't reflect arithmetic still raise errors
+    polyglot = point.original + "${{<%[%'\"}}%\\."
+    r = await ctx.send(point, polyglot)
+    if r is not None and ctx.app_answered(r, point, "ssti"):
+        m = TEMPLATE_ERROR.search(r.text)
+        if m and not any(TEMPLATE_ERROR.search(s.text) for s in base.samples):
+            ctx.report(Finding(
+                check="ssti", title="Template engine error triggered (possible SSTI)", severity=Severity.MEDIUM,
+                confidence=Confidence.TENTATIVE, url=point.url, method=point.method, parameter=point.name,
+                location=point.location, payload=polyglot, evidence=f"Template error: {m.group(0)[:160]}",
+                description="A template-syntax polyglot made the template engine raise an error, so input reaches a "
+                            "template. Arithmetic evaluation was not reflected - identify the engine and test manually.",
+                remediation="Never build templates from user input; pass input as template data.",
+                cwe="CWE-1336", owasp="A03:2021-Injection", detection=SIGNATURE,
+                references=["https://portswigger.net/web-security/server-side-template-injection"],
+                tags=["ssti", "hunting"], request=ctx.curl(point, polyglot),
+            ))
+
+
+TEMPLATE_ERROR = re.compile(r"(?i)TemplateSyntaxError|jinja2\.exceptions|twig_error|Twig\\Error|freemarker\.core|"
+                            r"org\.apache\.velocity|ParseErrorException|thymeleaf\.exceptions|mako\.exceptions|"
+                            r"Smarty(?:Compiler)?Exception|Liquid::SyntaxError|Handlebars.{0,20}(?:Parse|Syntax) error|"
+                            r"ejs:\d+|unexpected token.{0,40}template")
+
+
 # --------------------------------------------------------------------------------- LFI
 
 LFI_PAYLOADS = [

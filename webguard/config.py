@@ -11,7 +11,7 @@ DEFAULT_MODEL = Path.home() / ".webguard" / "triage_model.json"
 
 ALL_CHECKS = (
     # injection (per parameter)
-    "sqli", "nosqli", "xss", "ssti", "lfi", "cmdi", "redirect", "crlf", "ssrf",
+    "sqli", "nosqli", "xss", "ssti", "lfi", "cmdi", "redirect", "crlf", "ssrf", "ldapi", "xpathi", "xinclude",
     # endpoint / host level
     "xxe", "auth", "host_header", "access", "idor", "graphql", "cors", "headers", "exposure",
     # passive analysis
@@ -40,6 +40,7 @@ class ScanConfig:
     param_discovery: bool = False
     oob_domain: str | None = None  # interactsh/collaborator domain for blind SSRF
     tamper: tuple[str, ...] = ()
+    bypass_variants: bool = True  # per-class encoding/normalisation variants against application filters
     auto_tamper: bool = True  # sqlmap-style tamper chains when an *application* input filter blocks basics
     wordlist: Path = DATA_DIR / "wordlists" / "common.txt"  # ffuf / large brute force
     discovery_wordlist: Path | None = DATA_DIR / "wordlists" / "quick.txt"  # built-in content discovery (None = off)

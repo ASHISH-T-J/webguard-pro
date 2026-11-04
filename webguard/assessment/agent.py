@@ -36,7 +36,8 @@ from webguard.crawler import Crawler, CrawlResult, normalize_url
 from webguard.detection.baseline import title as page_title
 from webguard.detection.checks import POINT_CHECKS, advanced, analyzers, dom, hunting, passive
 from webguard.detection.checks import host as host_checks
-from webguard.detection.context import Context
+from webguard.detection.context import ACTIVE_ENCODING, ACTIVE_VARIANT, Context
+from webguard.detection.encoding import DECODE, detect_encoding, variants_for
 from webguard.http import HttpClient, Resp
 from webguard.ml.triage import TriageModel
 from webguard.models import Confidence, Finding, Host, InjectionPoint
@@ -183,6 +184,7 @@ class AssessmentAgent:
         self._done: set[str] = set()
         self._auth_required: set[str] = set()
         self._recon_used = 0
+        self._variant_runs = 0
         self._client_params: dict[str, set[str]] = {}
         self._seen_status: dict[str, int] = {}
         self._t0 = time.time()
@@ -314,6 +316,7 @@ class AssessmentAgent:
                 uniq.setdefault(p.key, p)
         self.res.points = list(uniq.values())
         self.res.points += self._header_points(crawl, hosts)
+        self.res.points += self._encoded_points(self.res.points)
         # status observed for each bare URL during mapping (used to prefer reachable inputs)
         self._seen_status: dict[str, int] = {}
         for u, r in crawl.pages.items():
@@ -503,7 +506,7 @@ class AssessmentAgent:
                 if ptype and ptype.label in ("login", "admin", "api_json"):
                     prior *= 1.1
                 cost = 25 * min(len(hyps), 4) if remaining > 0.3 else 25 * min(len(hyps), 2)
-                add("inject", f"{p.method} {p.url} [{p.location}] {p.name}",
+                add("inject", f"{p.method} {p.url} [{p.location}{'+' + p.encoding if p.encoding else ''}] {p.name}",
                     f"'{p.name}' looks like {kind} (p={conf:.2f}) -> try {', '.join(hyps[:3])} first", prior, cost)
             posts = sorted({u for m, u in self._crawl.api_writes if m in ("POST", "PUT")} |
                            {f.url for f in self._crawl.forms if f.method == "POST"})
@@ -678,6 +681,7 @@ class AssessmentAgent:
                 hyps = [c for c in ("sqli", "xss", "ssti", "cmdi") if cfg.enabled(c)]
             thorough = self._budget_left() > 0.3 and p.location not in ("header", "cookie")
             order = hyps + ([x for x in POINT_CHECKS if x not in hyps and cfg.enabled(x)] if thorough else [])
+            ACTIVE_ENCODING.set(p.encoding)  # task-local: labels findings made inside an encoded value
             for check in order:
                 if self._budget_left() <= 0:
                     break  # stop between checks, not only between actions
@@ -685,6 +689,8 @@ class AssessmentAgent:
                     continue
                 try:
                     await POINT_CHECKS[check](ctx, p)
+                    if cfg.bypass_variants and not self._found(check, p):
+                        await self._bypass_variants(p, check, hyps)
                 except Exception as exc:  # isolate checks: one failure must not skip the others
                     log.debug("check %s failed on %s [%s]: %s", check, p.url, p.name, exc, exc_info=True)
                 self._cover(check)
@@ -720,15 +726,78 @@ class AssessmentAgent:
         elif a == "verify":
             await self._verify(t)
 
+    def _found(self, check: str, p: InjectionPoint) -> bool:
+        return any(f.check == check and f.parameter == p.name and f.url == p.url for f in self.ctx.findings.values())
+
+    async def _bypass_variants(self, p: InjectionPoint, check: str, hyps: list[str]) -> None:
+        """Re-run a check through bug-class-specific encoding/normalisation variants.
+
+        Only when the application (not a WAF/CDN/rate limiter) answered, and either the app showed input
+        filtering for this parameter or the class is one of the parameter's two leading hypotheses.
+        """
+        ctx = self.ctx
+        if p.key in ctx.obstructed_keys or check == "anomaly" or p.location in ("header", "cookie"):
+            return
+        filtered = ctx.filter_signals.get(p.key, 0) > 0
+        kind = classify_param(p.name)[0]
+        # without an observed filter, only where parameter semantics make an encoding-sensitive bug likely
+        strong = {"lfi": "file", "ssrf": "url", "redirect": "redirect", "cmdi": "command"}.get(check) == kind \
+            and check in hyps[:2]
+        escaped = check == "xss" and p.key in ctx.escaped_points
+        if not (strong or escaped or (filtered and check in hyps[:4])):
+            return  # a filter only justifies variants for bug classes plausible for this parameter
+        variants = variants_for(check, p.original)
+        if escaped and not filtered:
+            variants = [v for v in variants if v.name in ("double-url-encoding", "html-entities")]  # decode-after-escape
+        elif not filtered:
+            variants = variants[:2]
+        for variant in variants:
+            if self._budget_left() <= 0:
+                return
+            tok = ACTIVE_VARIANT.set(variant)
+            try:
+                await POINT_CHECKS[check](ctx, p)
+            finally:
+                ACTIVE_VARIANT.reset(tok)
+            self._variant_runs += 1
+            if self._found(check, p):
+                self.res.facts.append(f"Input filter on {urlsplit(p.url).path} [{p.name}] bypassed for {check} "
+                                      f"with '{variant.name}' ({variant.source})")
+                return
+
+    def _encoded_points(self, points: list[InjectionPoint]) -> list[InjectionPoint]:
+        """Parameters whose value is base64/hex/URL-encoded: inject inside the decoded value."""
+        out = []
+        for p in points:
+            if p.location not in ("query", "form", "json") or p.encoding:
+                continue
+            enc = detect_encoding(p.original)
+            if not enc:
+                continue
+            try:
+                decoded = DECODE[enc](p.original)
+            except Exception:
+                continue
+            params = dict(p.params)
+            params[p.name] = decoded
+            out.append(InjectionPoint(p.url, p.method, p.location, p.name, params, source=f"{p.source}+{enc}",
+                                      encoding=enc))
+        if out:
+            self.res.facts.append("Encoded parameter values (testing inside the decoded value): " + ", ".join(
+                f"{urlsplit(x.url).path}[{x.name}]={x.encoding}" for x in out[:10]))
+        return out
+
     def _ordered_hypotheses(self, p: InjectionPoint) -> list[str]:
         """NLP rank x impact x technology prior: e.g. on a search field SQLi (9) outranks XSS (6)."""
         hyps = [h for h in hypotheses_for_param(p.name, p.original) if h in POINT_CHECKS and self.config.enabled(h)]
         return sorted(hyps, key=lambda h: -(0.85 ** hyps.index(h)) * CHECK_IMPACT.get(h, 3) * self._tech_mult(h))
 
     def _point_for(self, target: str) -> InjectionPoint:
-        m = re.match(r"(\S+) (\S+) \[(\w+)\] (.+)$", target)
+        m = re.match(r"(\S+) (\S+) \[([\w+]+)\] (.+)$", target)
         method, url, loc, name = m.groups()
-        return next(p for p in self.res.points if (p.method, p.url, p.location, p.name) == (method, url, loc, name))
+        loc, _, enc = loc.partition("+")
+        return next(p for p in self.res.points
+                    if (p.method, p.url, p.location, p.name, p.encoding) == (method, url, loc, name, enc))
 
     def _passive_all(self) -> None:
         cfg, ctx = self.config, self.ctx
@@ -764,16 +833,30 @@ class AssessmentAgent:
         f = self.ctx.findings.get(fingerprint)
         if f is None:
             return
-        p = next((p for p in self.res.points if p.name == f.parameter and p.url == f.url and p.location == f.location), None)
+        enc = (f.context or {}).get("value_encoding", "")
+        p = next((p for p in self.res.points if p.name == f.parameter and p.url == f.url and p.location == f.location
+                  and p.encoding == enc), None)
         if p is None:
             return
         fresh = Context(self.client, self.config, self.sigdb)
-        await POINT_CHECKS[f.check](fresh, p)
+        bypass = (f.context or {}).get("bypass", {}).get("variant")
+        variant = next((v for v in variants_for(f.check, p.original) if v.name == bypass), None)
+        tok = ACTIVE_VARIANT.set(variant)
+        etok = ACTIVE_ENCODING.set(enc)
+        try:
+            await POINT_CHECKS[f.check](fresh, p)
+        finally:
+            ACTIVE_VARIANT.reset(tok)
+            ACTIVE_ENCODING.reset(etok)
         if any(g.check == f.check for g in fresh.findings.values()):
             if "verified" not in f.tags:
                 f.tags.append("verified")
-            if f.payload:  # attach the exact HTTP exchange as report evidence
-                r = await self.ctx.send(p, f.payload)
+            if f.payload:  # attach the exact HTTP exchange as report evidence (payload is already transformed)
+                tok = ACTIVE_VARIANT.set(None)
+                try:
+                    r = await self.ctx.send(p, f.payload)
+                finally:
+                    ACTIVE_VARIANT.reset(tok)
                 if r is not None:
                     marker = f.payload if f.payload in r.text else None
                     f.context["http_request"] = r.raw_request()
