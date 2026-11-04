@@ -126,6 +126,7 @@ async def hunt(domain: str, config: ScanConfig, scope: Scope, db: Database, out_
                              "new_findings": len(result.new_findings)})
     meta = {"scan_id": scan_id, "hosts": [h.to_dict() for h in recon.hosts], "ranking": [
         {k: v for k, v in r.items() if k != "host"} for r in ranking],
-        "new_assets": recon.new_assets, "interesting_urls": recon.interesting_urls[:500]}
+        "new_assets": recon.new_assets, "interesting_urls": recon.interesting_urls[:500],
+        "subdomain_status": recon.liveness}
     result.reports = write_all(domain, result.findings, out_dir, formats, meta, report_options)
     return result

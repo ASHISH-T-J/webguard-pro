@@ -47,6 +47,9 @@ class ScanConfig:
     auto_tamper: bool = True  # sqlmap-style tamper chains when an *application* input filter blocks basics
     wordlist: Path = DATA_DIR / "wordlists" / "common.txt"  # ffuf / large brute force
     discovery_wordlist: Path | None = DATA_DIR / "wordlists" / "quick.txt"  # built-in content discovery (None = off)
+    history: bool = False  # seed the crawl with archived URLs (Wayback / gau) for the target host
+    expand_scope: bool = False  # add hosts under the target's registrable domain found in content to the scope
+    max_new_hosts: int = 10  # cap on hosts added from content discovery per assessment
     ports: str | None = None  # network service audit: None = off, "top" = common ports, or "22,80,8000-8100"
     discovery_depth: int | None = None  # recursion levels below the root (None = profile default: 0/1/2)
     db_path: Path = DEFAULT_DB

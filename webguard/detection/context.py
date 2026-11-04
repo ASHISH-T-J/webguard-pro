@@ -30,6 +30,27 @@ ACTIVE_VARIANT: contextvars.ContextVar[Variant | None] = contextvars.ContextVar(
 ACTIVE_ENCODING: contextvars.ContextVar[str] = contextvars.ContextVar("webguard_encoding", default="")
 # check (bug class) currently being tested in this task - shown in verbose payload output
 ACTIVE_CHECK: contextvars.ContextVar[str] = contextvars.ContextVar("webguard_check", default="")
+# set while re-verifying a finding: confirmed-class short-circuiting must not block the re-test
+VERIFYING: contextvars.ContextVar[bool] = contextvars.ContextVar("webguard_verifying", default=False)
+
+# bug classes whose confirmation holds for the whole host (one origin-wide misconfiguration)
+HOST_SCOPED = {"cors", "host_header", "headers", "cache_deception", "tls", "server"}
+_ID_SEG = re.compile(r"^(?:\d+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{16,}|"
+                     r"[A-Za-z0-9_-]{22,})$", re.I)
+
+
+def route_key(url: str) -> str:
+    """'/users/42/orders/9f3a...' -> 'host/users/{id}/orders/{id}': URLs that are one route in the app."""
+    from urllib.parse import urlsplit
+
+    p = urlsplit(url)
+    segs = ["{id}" if _ID_SEG.match(s) else s for s in p.path.split("/")]
+    return f"{p.netloc.lower()}{'/'.join(segs)}"
+
+
+def check_family(check: str) -> str:
+    """Bug class of a finding/check ('cve:CVE-1' -> 'cve', 'xss' -> 'xss')."""
+    return check.split(":", 1)[0]
 FILTER_HINT = re.compile(r"(?i)invalid (?:characters?|input|value|parameter|request|file ?name|path)|not allowed|"
                          r"illegal (?:characters?|input)|forbidden characters?|bad input|disallowed|"
                          r"hack(?:ing)? attempt|possible (?:attack|injection)|detected (?:sql|injection)|"
@@ -64,6 +85,9 @@ class Context:
         self.filter_signals: dict[tuple, int] = {}
         self.escaped_points: set[tuple] = set()  # reflections came back HTML-escaped (decode-order bugs possible)
         self._baselines: dict[tuple, Baseline | None] = {}
+        # confirmed bug class per input / route / host: later tests of that class there are redundant
+        self.confirmed: set[tuple] = set()
+        self.skipped_redundant = 0
         self._baseline_locks: dict[tuple, asyncio.Lock] = {}
 
     # ------------------------------------------------------------------ findings
@@ -84,8 +108,33 @@ class Context:
         if existing and (existing.confidence, existing.severity) >= (finding.confidence, finding.severity):
             return
         self.findings[fp] = finding
+        self._confirm(finding)
         if not existing and self.on_finding:
             self.on_finding(finding)
+
+    # ------------------------------------------------------------------ confirmation ledger
+    def _confirm(self, f: Finding) -> None:
+        from webguard.models import Confidence
+
+        if f.confidence < Confidence.FIRM or f.detection == "anomaly":
+            return  # only proven bugs stop further testing; leads keep the class open
+        fam = check_family(f.check)
+        if fam in HOST_SCOPED:
+            self.confirmed.add((fam, "host", route_key(f.url).split("/", 1)[0]))
+        elif f.parameter:
+            self.confirmed.add((fam, route_key(f.url), f.location or "", f.parameter))
+        else:
+            self.confirmed.add((fam, "url", route_key(f.url)))
+
+    def is_confirmed(self, check: str, point: InjectionPoint | None = None, url: str | None = None) -> bool:
+        """Has this bug class already been proven for this input (any URL of the same route) / URL / host?"""
+        fam = check_family(check)
+        target = point.url if point is not None else url or ""
+        if (fam, "host", route_key(target).split("/", 1)[0]) in self.confirmed:
+            return True
+        if point is not None:
+            return (fam, route_key(point.url), point.location, point.name) in self.confirmed
+        return (fam, "url", route_key(target)) in self.confirmed
 
     def has(self, check: str, point: InjectionPoint | None = None, url: str | None = None) -> bool:
         """Was ``check`` already confirmed for this point / URL? (avoid redundant requests)"""
@@ -182,6 +231,10 @@ class Context:
 
     async def send(self, point: InjectionPoint, value: str, *, timeout: float | None = None,
                    follow_redirects: bool = False) -> Resp | None:
+        check = ACTIVE_CHECK.get()
+        if check and not VERIFYING.get() and str(value) != str(point.original) and self.is_confirmed(check, point):
+            self.skipped_redundant += 1  # class already proven on this input (possibly by a concurrent task)
+            return None
         kw = self._build(point, value)
         if ui.LEVEL >= 3 and str(value) != str(point.original):
             variant = ACTIVE_VARIANT.get()

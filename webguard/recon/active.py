@@ -63,34 +63,50 @@ async def cname(host: str) -> str | None:
         return None
 
 
-async def probe(client: HttpClient, sigdb: SignatureDB, host: str) -> list[Host]:
-    """Probe http/https for a host; returns live endpoints with fingerprint + WAF info."""
-    out = []
-    for scheme in ("https", "http"):
-        url = f"{scheme}://{host}"
-        r = await client.safe_get(url + "/", follow_redirects=True)
-        if r is None:
-            continue
-        cookies = [c.split("=", 1)[0].strip() for c in r.headers.get_list("set-cookie")]
-        tech = sigdb.fingerprint_tech(r.headers, cookies, r.text[:300000])
-        waf = set(sigdb.detect_waf(r.headers, cookies, r.text[:50000]))
-        w = await client.safe_get(url + WAF_PROBE)
-        if w is not None:
-            wc = [c.split("=", 1)[0].strip() for c in w.headers.get_list("set-cookie")]
-            waf |= set(sigdb.detect_waf(w.headers, wc, w.text[:50000]))
-            if not waf and w.status in (403, 406, 419, 429, 501, 503) and r.status < 400:
-                waf.add("Generic (malicious probe blocked)")
-        final = urlsplit(r.url)
-        out.append(Host(
-            url=f"{final.scheme}://{final.netloc}", status=r.status, title=page_title(r.text),
-            server=r.headers.get("server", ""),
-            technologies=[f"{k} {v}".strip() for k, v in sorted(tech.items())],
-            waf=sorted(waf), content_length=len(r.text),
-        ))
-        if scheme == "https" and final.scheme == "https":
-            break  # don't double-report the same app over http
+async def describe(client: HttpClient, sigdb: SignatureDB, base: str) -> Host | None:
+    """Fingerprint one live base URL (technologies, WAF, title)."""
+    r = await client.safe_get(base + "/", follow_redirects=True)
+    if r is None or not r.status:
+        r = await client.safe_get(base + "/", follow_redirects=True, timeout=30.0)  # slow app: one long try
+    if r is None or not r.status:
+        return None
+    cookies = [c.split("=", 1)[0].strip() for c in r.headers.get_list("set-cookie")]
+    tech = sigdb.fingerprint_tech(r.headers, cookies, r.text[:300000])
+    waf = set(sigdb.detect_waf(r.headers, cookies, r.text[:50000]))
+    w = await client.safe_get(base + WAF_PROBE)
+    if w is not None:
+        wc = [c.split("=", 1)[0].strip() for c in w.headers.get_list("set-cookie")]
+        waf |= set(sigdb.detect_waf(w.headers, wc, w.text[:50000]))
+        if not waf and w.status in (403, 406, 419, 429, 501, 503) and r.status < 400:
+            waf.add("Generic (malicious probe blocked)")
+    final = urlsplit(r.url)
+    if not client.scope.in_scope(r.url):
+        final = urlsplit(base)  # redirected off-scope: keep the original origin
+    return Host(url=f"{final.scheme}://{final.netloc}", status=r.status, title=page_title(r.text),
+                server=r.headers.get("server", ""), technologies=[f"{k} {v}".strip() for k, v in sorted(tech.items())],
+                waf=sorted(waf), content_length=len(r.text))
+
+
+async def probe(client: HttpClient, sigdb: SignatureDB, host: str, liveness: dict | None = None) -> list[Host]:
+    """Live HTTP services for a host (robust: DNS -> TCP -> HTTP with escalating timeouts and a second chance).
+
+    ``liveness`` (optional dict) receives the :class:`~webguard.recon.liveness.Liveness` verdict.
+    """
+    from webguard.recon import liveness as lv
+
+    verdict = (await lv.check_many(client, [host]))[host]
+    if liveness is not None:
+        liveness[host] = verdict
+    out: list[Host] = []
+    for base in verdict.urls:
+        h = await describe(client, sigdb, base)
+        if h is not None:
+            out.append(h)
     uniq = {h.url: h for h in out}
-    return list(uniq.values())
+    hosts = list(uniq.values())
+    # the same app over https and http: keep https only
+    https_hosts = {urlsplit(h.url).hostname for h in hosts if h.url.startswith("https://")}
+    return [h for h in hosts if h.url.startswith("https://") or urlsplit(h.url).hostname not in https_hosts]
 
 
 async def port_scan(host: str, ports: list[int] | None = None, timeout: float = 2.0,

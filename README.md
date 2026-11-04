@@ -277,6 +277,39 @@ as not tested. TLS handshakes connect directly to the target, so they are skippe
 (the HSTS and redirect checks still run through the proxy). Certificate details (key size, signature)
 need the optional `cryptography` package.
 
+### Efficiency: stop testing what is already proven
+
+- **Confirmed class, stop that class there.** A FIRM or CERTAIN finding records its bug class for that
+  input (method, route, location, parameter). Later tests of the same class on that input are skipped:
+  before the check starts, and inside running checks (concurrent tasks stop sending payloads). Other bug
+  classes on the same input, and the same class on other inputs, still run.
+- **Route templating.** `/item/1`, `/item/2`, `/doc/<uuid>` are one route: a confirmation covers every
+  URL of the route, and at most two URLs per route and parameter are turned into test inputs at all.
+- **Host-wide issues once per host.** CORS, Host-header, security-header, cache-deception, TLS and
+  server findings are origin-wide: once confirmed on a host, other URLs of that host skip that class.
+- Tentative leads and anomalies never stop testing; re-verification of a finding is never blocked.
+- The report states how many checks and payload requests were skipped (`skipped_redundant` in stats).
+
+### Crawling, assets and subdomains
+
+- **Active crawl:** links, forms, JavaScript endpoints and API calls, robots.txt and sitemaps.
+- **Passive crawl (`--history`):** archived URLs (Wayback / gau) for the target host seed the crawl,
+  often reaching endpoints that are no longer linked.
+- **Asset discovery from content:** host names referenced in HTML, JavaScript and API responses
+  (`api.`, `admin.`, `staging.` ...). In-scope ones (`--subdomains`, a scope file, or `--expand-scope` for
+  anything under the target's registrable domain) are probed, crawled and tested in the same run. The
+  rest are listed as discovered assets or third-party dependencies (never tested).
+- **Active subdomain enumeration** (recon / hunt): DNS brute force (built-in list or `--sub-wordlist`),
+  permutations of found labels (`api-staging`, `dev-api`, `api2`, `staging.api`, ...), wildcard-DNS
+  filtering, and a zone-transfer (AXFR) check that is reported as a finding when it succeeds.
+  `--no-active-subs` keeps recon passive.
+- **Robust live checking:** DNS, then TCP per port, then HTTP with escalating timeouts (6s, 15s), GET
+  falling back to HEAD and http/https falling back to each other. Hosts with an open port but no answer
+  get a **second-chance pass** with a 40s timeout and low concurrency after everything else, with their
+  circuit-breaker state reset. Every subdomain ends with a status (`live` with its HTTP code, including
+  4xx/5xx, `unresponsive`, `filtered`, `refused`, `dns-fail`), shown in a table by `webguard recon` and
+  included in the recon JSON and hunt reports.
+
 ### Targets
 
 `scan` and `assess` accept any number of targets as arguments and/or `-l FILE` (repeatable):
@@ -643,7 +676,7 @@ Common options: `--profile safe|standard|thorough`, `--scope`, `--subdomains`, `
 `--oob`, `--tamper`, `--signatures`, `--wordlist`, `--no-discovery`, `--no-screenshots`, `-o`, `-f`, `--db`,
 `--report-style client|technical`, `--report-author`, `--report-title`, `--no-redact`, `--model`,
 `-v 0-6`, `--no-color`, `--no-progress`, `--fresh`, `--session-dir`, `--ports`, `--discovery-depth`,
-`--oob`, `--oob-token`, `--oob-wait`, `-l FILE` (repeatable).
+`--oob`, `--oob-token`, `--oob-wait`, `-l FILE` (repeatable), `--history`, `--expand-scope`.
 
 Legacy entry points `python3 webguard.py -d example.com -m passive|active|vulnerability` and
 `python3 scanner.py -d …` still work (translated to the commands above).
@@ -688,7 +721,7 @@ Extend detection without code: drop JSON files into a directory and pass `--sign
 
 ```bash
 pip install -e ".[all,dev]"
-pytest -q                       # 198 tests: e2e detection + safe twins, server/TLS audit, resilience/rate limits, context, agent, reporting/redaction, console/resume, NLP, CLI
+pytest -q                       # 205 tests: e2e detection + safe twins, server/TLS audit, resilience/rate limits, context, agent, reporting/redaction, console/resume, NLP, CLI
 ruff check webguard tests
 python tests/vulnapp.py         # run the vulnerable test app locally
 python benchmarks/juice_shop.py # benchmark against a running Juice Shop

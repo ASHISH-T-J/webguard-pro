@@ -136,6 +136,10 @@ def _common(p: argparse.ArgumentParser) -> None:
     g = p.add_argument_group("scope & engagement")
     g.add_argument("--scope", help="scope file (.txt rules or .yml with include/exclude/exclude_paths)")
     g.add_argument("--subdomains", action="store_true", help="treat *.target as in scope")
+    g.add_argument("--history", action="store_true",
+                   help="passive crawl: seed with archived URLs (Wayback/gau) of the target host")
+    g.add_argument("--expand-scope", action="store_true",
+                   help="add hosts under the target's domain found in pages/JS to the scope and test them")
     g.add_argument("--ports", nargs="?", const="top", metavar="LIST",
                    help="also audit network services: 'top' (default list) or e.g. 22,80,8000-8100")
     g.add_argument("-H", "--header", action="append", default=[], metavar="'Name: value'",
@@ -229,6 +233,8 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--passive", action="store_true", help="no traffic to the target (public sources only)")
     r.add_argument("--no-tools", action="store_true", help="don't use installed external tools")
     r.add_argument("--no-history", action="store_true", help="skip Wayback/gau URL collection")
+    r.add_argument("--no-active-subs", action="store_true", help="skip DNS brute force / permutations / AXFR")
+    r.add_argument("--sub-wordlist", help="subdomain label wordlist (default: built-in)")
     _common(r)
 
     h = sub.add_parser("hunt", help="bug bounty pipeline: recon -> rank -> scan -> nuclei -> triage -> reports")
@@ -371,7 +377,8 @@ def make_config(args: argparse.Namespace) -> ScanConfig:
         max_urls=args.max_urls, proxy=args.proxy, headers=headers, cookies=cookies, checks=checks,
         time_delay=args.time_delay, timing_checks=not args.no_timing, param_discovery=args.param_discovery,
         oob=args.oob, oob_token=args.oob_token, oob_wait=args.oob_wait,
-        discovery_depth=args.discovery_depth, ports=getattr(args, "ports", None), tamper=tamper, db_path=Path(args.db), model_path=Path(args.model), verbose=args.verbose or 0,
+        discovery_depth=args.discovery_depth, ports=getattr(args, "ports", None),
+        history=getattr(args, "history", False), expand_scope=getattr(args, "expand_scope", False), tamper=tamper, db_path=Path(args.db), model_path=Path(args.model), verbose=args.verbose or 0,
         **({"discovery_wordlist": None} if args.no_discovery else
            {"discovery_wordlist": Path(args.wordlist), "wordlist": Path(args.wordlist)} if args.wordlist else {}),
     ), args.profile, explicit_wordlist=bool(args.wordlist) or args.no_discovery)
@@ -701,14 +708,20 @@ async def cmd_recon(args: argparse.Namespace) -> int:
     scope = make_scope(args, args.domain) if args.scope else Scope.for_target(args.domain, include_subdomains=True)
     db = Database(cfg.db_path)
     scan_id = db.start_scan(args.domain, "recon")
+    words = None
+    if args.sub_wordlist:
+        words = [w.strip() for w in Path(args.sub_wordlist).read_text().splitlines() if w.strip()]
     res = await run_recon(args.domain, cfg, scope, db, scan_id, passive_only=args.passive,
-                          use_tools=not args.no_tools, history=not args.no_history, status=ui.status)
+                          use_tools=not args.no_tools, history=not args.no_history,
+                          active_subdomains=not args.no_active_subs, sub_wordlist=words, status=ui.status)
     db.save_findings(scan_id, args.domain, res.findings)
     db.finish_scan(scan_id, {"subdomains": len(res.subdomains), "hosts": len(res.hosts)})
     print()
     for h in sorted(res.hosts, key=lambda h: h.url):
         waf = ui.c(f" WAF:{','.join(h.waf)}", "yellow") if h.waf else ""
         print(f"  {h.status} {ui.c(h.url, 'bold')} {ui.c(h.title[:60], 'dim')} {', '.join(h.technologies)[:120]}{waf}")
+    if res.liveness:
+        _liveness_table(res.liveness)
     for f in res.findings:
         ui.print_finding(f)
     if res.interesting_urls:
@@ -725,10 +738,23 @@ async def cmd_recon(args: argparse.Namespace) -> int:
     path = out / f"recon_{args.domain}_{scan_id}.json"
     path.write_text(json.dumps({"domain": args.domain, "sources": res.sources, "subdomains": res.subdomains,
                                 "hosts": [h.to_dict() for h in res.hosts], "interesting_urls": res.interesting_urls,
-                                "historical_urls": res.historical_urls,
+                                "historical_urls": res.historical_urls, "liveness": res.liveness,
                                 "findings": [f.to_dict() for f in res.findings]}, indent=2))
     ui.status(f"Recon saved to {path} (scan id {scan_id})")
     return 0
+
+
+def _liveness_table(liveness: dict[str, dict]) -> None:
+    """Every subdomain with its live status (live first), so nothing silently disappears."""
+    colour = {"live": "green", "unresponsive": "yellow", "tls-error": "yellow", "filtered": "dim", "refused": "dim",
+              "dns-fail": "dim"}
+    order = {"live": 0, "unresponsive": 1, "tls-error": 2, "filtered": 3, "refused": 4, "dns-fail": 5}
+    ui.out(ui.c(f"\n  Subdomain status ({len(liveness)})", "bold"))
+    for name, v in sorted(liveness.items(), key=lambda kv: (order.get(kv[1]["status"], 9), kv[0])):
+        detail = " ".join(v.get("urls") or []) or v.get("reason", "")
+        code = f" HTTP {v['http_status']}" if v.get("http_status") else ""
+        status = v["status"]
+        ui.out(f"  {ui.c(f'{status:<13}', colour.get(status, 'dim'))} {name:<45}{code} {ui.c(detail[:90], 'dim')}")
 
 
 async def cmd_hunt(args: argparse.Namespace) -> int:

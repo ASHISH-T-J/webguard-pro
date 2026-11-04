@@ -42,7 +42,15 @@ from webguard.detection.checks import host as host_checks
 from webguard.detection.checks import oob as oob_checks
 from webguard.detection.checks import server as server_checks
 from webguard.detection.checks import tls as tls_checks
-from webguard.detection.context import ACTIVE_CHECK, ACTIVE_ENCODING, ACTIVE_VARIANT, Context
+from webguard.detection.context import (
+    ACTIVE_CHECK,
+    ACTIVE_ENCODING,
+    ACTIVE_VARIANT,
+    HOST_SCOPED,
+    VERIFYING,
+    Context,
+    route_key,
+)
 from webguard.detection.encoding import DECODE, detect_encoding, variants_for
 from webguard.http import HttpClient, Resp
 from webguard.ml.triage import TriageModel
@@ -120,6 +128,7 @@ class AssessmentResult:
     obstructed: dict[str, list[str]] = field(default_factory=dict)
     resilience: dict = field(default_factory=dict)
     services: list[dict] = field(default_factory=list)
+    assets: dict = field(default_factory=dict)
 
     def meta(self) -> dict:
         """Serializable assessment context for reports."""
@@ -135,15 +144,24 @@ class AssessmentResult:
             "page_types": dict(Counter(p.label for p in self.page_types.values())),
             "reasoner": self.reasoner, "environment": self.environment,
             "obstructed_inputs": self.obstructed, "resilience": self.resilience, "services": self.services,
+            "assets": self.assets,
         }
 
 
-def injection_points(crawl: CrawlResult, extra_urls: list[str] = ()) -> list[InjectionPoint]:
+def injection_points(crawl: CrawlResult, extra_urls: list[str] = (), per_route: int = 2) -> list[InjectionPoint]:
+    """Inputs to test. URLs that are the same route (/item/1, /item/2, ...) contribute at most ``per_route``
+    points per parameter: the same handler would be tested hundreds of times otherwise."""
     points: dict[tuple, InjectionPoint] = {}
+    routes: dict[tuple, int] = {}
 
     def add(p: InjectionPoint) -> None:
-        if not SKIP_PARAMS.match(p.name):
-            points.setdefault(p.key, p)
+        if SKIP_PARAMS.match(p.name) or p.key in points:
+            return
+        rk = (p.method.upper(), route_key(p.url), p.location, p.name)
+        if routes.get(rk, 0) >= per_route:
+            return
+        routes[rk] = routes.get(rk, 0) + 1
+        points[p.key] = p
 
     urls = set(crawl.pages) | crawl.urls_with_params | crawl.js_endpoints | set(extra_urls)
     for url in sorted(urls):
@@ -199,6 +217,7 @@ class AssessmentAgent:
         self._client_params: dict[str, set[str]] = {}
         self._seen_status: dict[str, int] = {}
         self._reflections: dict[tuple[str, str], dict] = {}
+        self._skipped_checks = 0
         self._t0 = time.time()
         self._cur_phase = "recon"
         self._p_done = self._p_total = 0
@@ -229,6 +248,12 @@ class AssessmentAgent:
                 self.res.stats.update(client.stats)
                 self.res.resilience = client.resilience_report()
                 self.res.obstructed = {k: sorted(v)[:50] for k, v in self.ctx.obstructed.items()}
+        skipped = self._skipped_checks + self.ctx.skipped_redundant
+        if skipped:
+            self.res.facts.append(f"Efficiency: {self._skipped_checks} check(s) and {self.ctx.skipped_redundant} "
+                                  "payload request(s) skipped because the bug class was already confirmed for that "
+                                  "input, route or host")
+        self.res.stats["skipped_redundant"] = skipped
         self._cur_phase = "analysis"
         self.on_stage(self.stages, self.stages, "Analysis & reporting")
         self._analyse()
@@ -426,9 +451,12 @@ class AssessmentAgent:
 
         seeds += [h.url + "/" for h in hosts] + [u for u in extra_urls if self.scope.in_scope(u)][: cfg.max_urls]
         self.on_status(f"[recon] mapping the application (crawl depth {cfg.max_depth}, JS & API mining)")
+        if cfg.history:  # passive crawl: archived URLs often hit endpoints no longer linked
+            seeds += await self._history_seeds(hosts)
         crawl = await Crawler(self.client, cfg.max_depth, cfg.max_urls).crawl(seeds)
         self._crawl = crawl
         self.res.pages = crawl.pages
+        await self._discover_assets(hosts)
         self.res.urls = sorted(crawl.pages)
         self.res.js_files = sorted(crawl.js_files)
         self._cover("crawl")
@@ -493,6 +521,69 @@ class AssessmentAgent:
         note = self._adapt()
         if note:
             self.res.facts.append(note)
+
+    async def _history_seeds(self, hosts: list[Host]) -> list[str]:
+        from webguard.recon import passive
+
+        out: list[str] = []
+        for name in sorted({urlsplit(h.url).hostname for h in hosts if urlsplit(h.url).hostname}):
+            try:
+                urls = await passive.historical_urls(name, self.config.proxy, use_tools=False)
+            except Exception as exc:
+                self.res.facts.append(f"Archive URLs for {name} unavailable: {type(exc).__name__}")
+                continue
+            keep = sorted(u for u in urls if self.scope.in_scope(u) and not SKIP_STATIC.search(u))
+            out += keep[: self.config.max_urls]
+            self.res.facts.append(f"Passive crawl: {len(keep)} archived in-scope URL(s) for {name} used as seeds")
+        return out
+
+    async def _discover_assets(self, hosts: list[Host]) -> None:
+        """Host names referenced in pages / JS / API responses: new in-scope hosts are probed and crawled."""
+        from webguard.recon import assets
+        from webguard.recon.active import probe
+
+        known = {urlsplit(h.url).hostname for h in hosts}
+        roots = {assets.registrable(n) for n in known if n}
+        own: set[str] = set()
+        other: set[str] = set()
+        for root in roots:
+            o, x = assets.hosts_in((r.text for r in self._crawl.pages.values()), root)
+            own |= o
+            other |= x
+        new = sorted(own - known)
+        if self.config.expand_scope:
+            for n in new:
+                self.scope.add(n)
+        in_scope = [n for n in new if self.scope.host_in_scope(n)]
+        out_scope = [n for n in new if n not in in_scope]
+        self.res.assets = {"discovered_in_scope": in_scope, "discovered_out_of_scope": out_scope,
+                           "third_party": sorted(other)[:200]}
+        if new:
+            self.res.facts.append(f"Asset discovery: {len(new)} related host(s) referenced in content"
+                                  + (f"; in scope and tested: {', '.join(in_scope[:10])}" if in_scope else "")
+                                  + (f"; out of scope (not tested, use --expand-scope or --subdomains): "
+                                     f"{', '.join(out_scope[:10])}" if out_scope else ""))
+        added: list[Host] = []
+        for n in in_scope[: self.config.max_new_hosts]:
+            self.on_status(f"[recon] new asset from content: {n}")
+            added += await probe(self.client, self.sigdb, n)
+        if not added:
+            return
+        self.res.hosts += added
+        sub = await Crawler(self.client, max(1, self.config.max_depth - 1), self.config.max_urls // 2).crawl(
+            [h.url + "/" for h in added])
+        self._merge_crawl(sub)
+
+    def _merge_crawl(self, sub: CrawlResult) -> None:
+        crawl = self._crawl
+        for u, r in sub.pages.items():
+            crawl.pages.setdefault(u, r)
+        crawl.forms += sub.forms
+        crawl.js_endpoints |= sub.js_endpoints
+        crawl.api_writes |= sub.api_writes
+        crawl.urls_with_params |= sub.urls_with_params
+        crawl.js_files |= sub.js_files
+        crawl.spa_routes |= sub.spa_routes
 
     async def _js_analysis(self, crawl: CrawlResult) -> None:
         js = {u: crawl.pages[u] for u in crawl.js_files if u in crawl.pages and crawl.pages[u].status == 200}
@@ -802,6 +893,9 @@ class AssessmentAgent:
     async def _execute(self, c: Candidate) -> None:
         ctx, cfg = self.ctx, self.config
         a, t = c.action, c.target
+        if a in HOST_SCOPED and t.startswith("http") and ctx.is_confirmed(a, url=t):
+            self._skipped_checks += 1  # origin-wide issue already proven on this host
+            return
         if a == "headers":
             r = self.res.pages.get(t + "/") or await self.client.safe_get(t + "/")
             if r is not None:
@@ -922,6 +1016,10 @@ class AssessmentAgent:
             for check in order:
                 if self._budget_left() <= 0:
                     break  # stop between checks, not only between actions
+                if self._found(check, p):
+                    self._skipped_checks += 1  # proven already: other classes on this input still run
+                    ui.debug(f"  skip {check} on {p.name}: already confirmed for this input/route")
+                    continue
                 ACTIVE_CHECK.set(check)
                 ui.debug(f"  {check} on {p.method} {p.url} [{p.name}] ({p.location})")
                 if check == "anomaly" and any(f.parameter == p.name and f.url == p.url for f in ctx.findings.values()):
@@ -972,7 +1070,9 @@ class AssessmentAgent:
             await self._verify(t)
 
     def _found(self, check: str, p: InjectionPoint) -> bool:
-        return any(f.check == check and f.parameter == p.name and f.url == p.url for f in self.ctx.findings.values())
+        """Bug class already proven for this input (on this or another URL of the same route)."""
+        return self.ctx.is_confirmed(check, p) or any(
+            f.check == check and f.parameter == p.name and f.url == p.url for f in self.ctx.findings.values())
 
     async def _bypass_variants(self, p: InjectionPoint, check: str, hyps: list[str]) -> None:
         """Re-run a check through bug-class-specific encoding/normalisation variants.
@@ -1084,6 +1184,7 @@ class AssessmentAgent:
         if p is None:
             return
         fresh = Context(self.client, self.config, self.sigdb)
+        VERIFYING.set(True)  # task-local: the re-test must send its payloads even though the class is confirmed
         bypass = (f.context or {}).get("bypass", {}).get("variant")
         variant = next((v for v in variants_for(f.check, p.original) if v.name == bypass), None)
         tok = ACTIVE_VARIANT.set(variant)
