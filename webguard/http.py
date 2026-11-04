@@ -424,6 +424,7 @@ class HttpClient:
         follow_redirects: bool = False,
         cache: bool = False,
         timeout: float | None = None,
+        raw_path: str | None = None,
     ) -> Resp | None:
         """Send a request. Returns ``None`` on network failure (never raises for transport errors).
 
@@ -441,7 +442,7 @@ class HttpClient:
                 return self._cache[key]
 
         result = await self._send_once(method, url, params=params, data=data, json=json, content=content,
-                                       headers=headers, timeout=timeout)
+                                       headers=headers, timeout=timeout, raw_path=raw_path)
         history: list[str] = []
         while follow_redirects and result is not None and result.status in (301, 302, 303, 307, 308):
             location = result.headers.get("location")
@@ -463,7 +464,7 @@ class HttpClient:
         return result
 
     async def _send_once(self, method: str, url: str, *, params=None, data=None, json=None, content=None,
-                         headers=None, timeout: float | None = None) -> Resp | None:
+                         headers=None, timeout: float | None = None, raw_path: str | None = None) -> Resp | None:
         st = self.host(url)
         attempt = 0
         while True:
@@ -481,6 +482,9 @@ class HttpClient:
                     resp = await self._client.request(
                         method, url, params=params, data=data, json=json, content=content, headers=headers,
                         follow_redirects=False,
+                        # wire-exact request target (e.g. /a/../../etc/passwd) for path-normalisation tests;
+                        # the host is still the scope-checked URL's host
+                        extensions={"target": raw_path.encode()} if raw_path else None,
                         timeout=httpx.Timeout(req_timeout, connect=min(req_timeout, 10.0)),
                     )
                     text = resp.text
