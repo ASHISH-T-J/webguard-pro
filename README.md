@@ -277,6 +277,72 @@ as not tested. TLS handshakes connect directly to the target, so they are skippe
 (the HSTS and redirect checks still run through the proxy). Certificate details (key size, signature)
 need the optional `cryptography` package.
 
+### Targets
+
+`scan` and `assess` accept any number of targets as arguments and/or `-l FILE` (repeatable):
+URLs, domains (probed on https and http), IPv4/IPv6 addresses, `host:port`, CIDR ranges (up to 1024
+hosts each), comma-separated lists, and `@file`. Files take one target per line with `#` comments.
+Duplicates are removed and invalid entries are reported without stopping the run.
+
+```bash
+webguard scan https://shop.example.com api.example.com 10.0.0.5:8443 10.0.1.0/28 -l more-targets.txt
+webguard assess @targets.txt --profile safe
+```
+
+### Reflection-guided testing and parameter extraction
+
+Before an input is tested, one request with a unique marker followed by `'"<` shows where the value comes
+back: HTML text, attribute, script, comment, JSON, a response header or `Location`, and whether special
+characters were escaped. The test plan for that input follows from it:
+
+- reflected into markup: XSS and SSTI first
+- reflected into `Location` / headers: open redirect and CRLF injection first
+- not reflected: XSS is demoted (it can still be stored or second-order), or skipped for GET inputs under
+  a tight budget; blind classes (SQLi, command injection, SSRF, ...) are unaffected
+
+The reflection profile is attached to XSS / SSTI / redirect / CRLF findings. Hidden-parameter discovery
+tries this site's own names first: JSON keys, form fields and `searchParams.get(...)` / `?name=` usage in
+JavaScript, then the generic wordlist.
+
+### API testing
+
+| Test | What it shows | OWASP API Top 10 |
+|---|---|---|
+| Unauthenticated access | with `--cookie` / `-H Authorization`, API endpoints that returned account data are requested again without credentials; same data = no authentication | API2 / API5 |
+| API version inventory | `/api/v2/...` also answering as `v1`, `v3`, `v0`, `beta`, `internal`, `dev` (extra fields raise severity) | API9 |
+| Content-type confusion | a JSON write endpoint that parses form-encoded bodies too (reachable by cross-site forms, CSRF with cookie auth); requires the body to be parsed (malformed JSON must change the answer) | API8 |
+
+These are read-only or repeat a request the application already makes. GraphQL, IDOR, mass data
+exposure, JWT and OpenAPI import are covered by the existing checks.
+
+### Fuzzing
+
+`webguard fuzz` is an ffuf-style fuzzer inside the scanner's scope enforcement and rate control: `FUZZ` in
+the URL path or query, a header (`-H`) or the body (`-d`); wordlist file or built-in `dirs`, `dirs-large`,
+`params`. Filters: `-mc`/`-fc` status, `-fs` size, `-fw` words, `-fl` lines, `-fr`/`-mr` regex. Automatic
+calibration filters soft-404 / catch-all responses (`--no-calibrate` to disable). `-o hits.json` saves
+the results.
+
+### Network services and fingerprint templates
+
+`--ports` (`top` or e.g. `22,80,8000-8100`) adds a network service audit to `scan` / `assess`: TCP connect
+scan, a passive banner read (SSH, FTP, SMTP, POP3/IMAP, MySQL, VNC and ActiveMQ greet first) or a single
+`HEAD /` on HTTP(S) ports. No logins or protocol commands are sent. Banners are matched against service
+fingerprints and the CVE / end-of-life data. Findings cover version-based CVEs (distro back-port tags
+lower confidence), exposed risky services, cleartext FTP/Telnet/POP3/IMAP and version disclosure. Skipped
+with `--proxy` (raw TCP would bypass it).
+
+Fingerprint templates (`webguard/data/fingerprints/*.yml`, 77 templates) use a nuclei-style format:
+`path`, `matchers` (word / regex / status / header, `and` / `or`, `negative`) and `extractors` (regex or
+header with a capture group). They only **identify** products and versions from public pages, headers,
+version endpoints and service greetings. Templates with `requires:` run only after a product they depend
+on was detected (workflow gating). For example, the WordPress plugin templates read
+`/wp-content/plugins/<slug>/readme.txt` only on WordPress sites. Results feed the CVE matcher.
+
+The NLP models train on the built-in seed corpora plus the extension corpora in
+`webguard/data/nlp/*.yml` (about 330 parameter names and 33 page samples, merged at load). A held-out
+parameter-name test keeps accuracy in check.
+
 ### Out-of-band (blind) detection
 
 `--oob` spawns an interaction server for the scan and gives every blind probe its own single-use
@@ -569,13 +635,15 @@ diminishing returns for repeated test types - all visible in the reasoning trace
 | `webguard db scans\|findings\|assets\|new\|label` | Query history, label tp/fp |
 | `webguard ml train\|status` | Train / inspect the triage model |
 | `webguard tools` | External tools and signature database status |
+| `webguard fuzz <url-with-FUZZ> -w <wordlist>` | ffuf-style fuzzing (URL, header or body), filters and auto-calibration |
 | `webguard wizard` (or `webguard --wizard`) | Guided mode: plain-language questions, prints the equivalent command, then runs it |
 
 Common options: `--profile safe|standard|thorough`, `--scope`, `--subdomains`, `-H`, `--cookie`, `--proxy`, `--rate`, `-c`, `--timeout`,
 `--depth`, `--max-urls`, `--checks`/`--skip`, `--no-timing`, `--time-delay`, `--param-discovery`,
 `--oob`, `--tamper`, `--signatures`, `--wordlist`, `--no-discovery`, `--no-screenshots`, `-o`, `-f`, `--db`,
 `--report-style client|technical`, `--report-author`, `--report-title`, `--no-redact`, `--model`,
-`-v 0-6`, `--no-color`, `--no-progress`, `--fresh`, `--session-dir`.
+`-v 0-6`, `--no-color`, `--no-progress`, `--fresh`, `--session-dir`, `--ports`, `--discovery-depth`,
+`--oob`, `--oob-token`, `--oob-wait`, `-l FILE` (repeatable).
 
 Legacy entry points `python3 webguard.py -d example.com -m passive|active|vulnerability` and
 `python3 scanner.py -d …` still work (translated to the commands above).
@@ -620,7 +688,7 @@ Extend detection without code: drop JSON files into a directory and pass `--sign
 
 ```bash
 pip install -e ".[all,dev]"
-pytest -q                       # 189 tests: e2e detection + safe twins, server/TLS audit, resilience/rate limits, context, agent, reporting/redaction, console/resume, NLP, CLI
+pytest -q                       # 198 tests: e2e detection + safe twins, server/TLS audit, resilience/rate limits, context, agent, reporting/redaction, console/resume, NLP, CLI
 ruff check webguard tests
 python tests/vulnapp.py         # run the vulnerable test app locally
 python benchmarks/juice_shop.py # benchmark against a running Juice Shop

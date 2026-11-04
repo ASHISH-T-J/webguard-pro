@@ -47,6 +47,7 @@ class ScanConfig:
     auto_tamper: bool = True  # sqlmap-style tamper chains when an *application* input filter blocks basics
     wordlist: Path = DATA_DIR / "wordlists" / "common.txt"  # ffuf / large brute force
     discovery_wordlist: Path | None = DATA_DIR / "wordlists" / "quick.txt"  # built-in content discovery (None = off)
+    ports: str | None = None  # network service audit: None = off, "top" = common ports, or "22,80,8000-8100"
     discovery_depth: int | None = None  # recursion levels below the root (None = profile default: 0/1/2)
     db_path: Path = DEFAULT_DB
     model_path: Path = DEFAULT_MODEL

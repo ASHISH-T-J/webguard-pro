@@ -171,16 +171,31 @@ def _param_features(name: str) -> list[str]:
     return feats
 
 
+def _corpus(builtin: dict[str, list[str]], name: str) -> dict[str, list[str]]:
+    """Built-in seed corpus + the extension corpus in data/nlp/<name>.yml (labels must already exist)."""
+    import yaml
+
+    from webguard.config import DATA_DIR
+
+    merged = {k: list(v) for k, v in builtin.items()}
+    path = DATA_DIR / "nlp" / f"{name}.yml"
+    if path.exists():
+        for label, items in (yaml.safe_load(path.read_text()) or {}).items():
+            if label in merged:
+                merged[label] += [str(x) for x in items if str(x) not in merged[label]]
+    return merged
+
+
 @lru_cache(maxsize=1)
 def page_model() -> NaiveBayes:
-    return NaiveBayes(_page_features).fit((t, label) for label, texts in PAGE_CORPUS.items() for t in texts)
+    corpus = _corpus(PAGE_CORPUS, "pages")
+    return NaiveBayes(_page_features).fit((t, label) for label, texts in corpus.items() for t in texts)
 
 
 @lru_cache(maxsize=1)
 def param_model() -> NaiveBayes:
-    return NaiveBayes(_param_features, alpha=0.3).fit(
-        (t, label) for label, names in PARAM_CORPUS.items() for t in names
-    )
+    corpus = _corpus(PARAM_CORPUS, "params")
+    return NaiveBayes(_param_features, alpha=0.3).fit((t, label) for label, names in corpus.items() for t in names)
 
 
 @dataclass

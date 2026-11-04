@@ -80,14 +80,15 @@ def _param_words() -> list[str]:
 
 
 async def discover_params(ctx: Context, url: str, method: str = "GET", known: dict[str, str] | None = None,
-                          chunk: int = 30) -> list[InjectionPoint]:
+                          chunk: int = 30, extra_words: list[str] = ()) -> list[InjectionPoint]:
     """Arjun-style hidden parameter discovery: batch candidate params, bisect chunks that change the page."""
     known = dict(known or {})
     probe_point = InjectionPoint(url=url, method=method, location="query", name="__wg__", params=dict(known))
     base = await ctx.baseline(probe_point)
     if base is None or base.stable_similarity < 0.85:
         return []
-    words = [w for w in _param_words() if w not in known]
+    # site-specific names first (seen in JSON / forms / JS of this application), then the generic list
+    words = [w for w in dict.fromkeys([*extra_words, *_param_words()]) if w not in known]
 
     async def changed(names: list[str]) -> bool:
         params = dict(known)

@@ -1,0 +1,211 @@
+# Generated from data/cve/wordpress_plugins.yml: run only after WordPress is detected.
+- id: wp-plugin-backup-backup
+  product: wp-plugin:backup-backup
+  requires:
+  - wordpress
+  http:
+  - path:
+    - /wp-content/plugins/backup-backup/readme.txt
+    matchers:
+    - type: regex
+      regex:
+      - (?i)^\s*(?:Stable tag|Version):\s*\d
+    extractors:
+    - regex:
+      - (?im)^\s*Stable tag:\s*([\d.]+)
+      - (?im)^\s*Version:\s*([\d.]+)
+- id: wp-plugin-contact-form-7
+  product: wp-plugin:contact-form-7
+  requires:
+  - wordpress
+  http:
+  - path:
+    - /wp-content/plugins/contact-form-7/readme.txt
+    matchers:
+    - type: regex
+      regex:
+      - (?i)^\s*(?:Stable tag|Version):\s*\d
+    extractors:
+    - regex:
+      - (?im)^\s*Stable tag:\s*([\d.]+)
+      - (?im)^\s*Version:\s*([\d.]+)
+- id: wp-plugin-duplicator
+  product: wp-plugin:duplicator
+  requires:
+  - wordpress
+  http:
+  - path:
+    - /wp-content/plugins/duplicator/readme.txt
+    matchers:
+    - type: regex
+      regex:
+      - (?i)^\s*(?:Stable tag|Version):\s*\d
+    extractors:
+    - regex:
+      - (?im)^\s*Stable tag:\s*([\d.]+)
+      - (?im)^\s*Version:\s*([\d.]+)
+- id: wp-plugin-essential-addons-for-elementor-lite
+  product: wp-plugin:essential-addons-for-elementor-lite
+  requires:
+  - wordpress
+  http:
+  - path:
+    - /wp-content/plugins/essential-addons-for-elementor-lite/readme.txt
+    matchers:
+    - type: regex
+      regex:
+      - (?i)^\s*(?:Stable tag|Version):\s*\d
+    extractors:
+    - regex:
+      - (?im)^\s*Stable tag:\s*([\d.]+)
+      - (?im)^\s*Version:\s*([\d.]+)
+- id: wp-plugin-forminator
+  product: wp-plugin:forminator
+  requires:
+  - wordpress
+  http:
+  - path:
+    - /wp-content/plugins/forminator/readme.txt
+    matchers:
+    - type: regex
+      regex:
+      - (?i)^\s*(?:Stable tag|Version):\s*\d
+    extractors:
+    - regex:
+      - (?im)^\s*Stable tag:\s*([\d.]+)
+      - (?im)^\s*Version:\s*([\d.]+)
+- id: wp-plugin-give
+  product: wp-plugin:give
+  requires:
+  - wordpress
+  http:
+  - path:
+    - /wp-content/plugins/give/readme.txt
+    matchers:
+    - type: regex
+      regex:
+      - (?i)^\s*(?:Stable tag|Version):\s*\d
+    extractors:
+    - regex:
+      - (?im)^\s*Stable tag:\s*([\d.]+)
+      - (?im)^\s*Version:\s*([\d.]+)
+- id: wp-plugin-litespeed-cache
+  product: wp-plugin:litespeed-cache
+  requires:
+  - wordpress
+  http:
+  - path:
+    - /wp-content/plugins/litespeed-cache/readme.txt
+    matchers:
+    - type: regex
+      regex:
+      - (?i)^\s*(?:Stable tag|Version):\s*\d
+    extractors:
+    - regex:
+      - (?im)^\s*Stable tag:\s*([\d.]+)
+      - (?im)^\s*Version:\s*([\d.]+)
+- id: wp-plugin-really-simple-ssl
+  product: wp-plugin:really-simple-ssl
+  requires:
+  - wordpress
+  http:
+  - path:
+    - /wp-content/plugins/really-simple-ssl/readme.txt
+    matchers:
+    - type: regex
+      regex:
+      - (?i)^\s*(?:Stable tag|Version):\s*\d
+    extractors:
+    - regex:
+      - (?im)^\s*Stable tag:\s*([\d.]+)
+      - (?im)^\s*Version:\s*([\d.]+)
+- id: wp-plugin-ultimate-member
+  product: wp-plugin:ultimate-member
+  requires:
+  - wordpress
+  http:
+  - path:
+    - /wp-content/plugins/ultimate-member/readme.txt
+    matchers:
+    - type: regex
+      regex:
+      - (?i)^\s*(?:Stable tag|Version):\s*\d
+    extractors:
+    - regex:
+      - (?im)^\s*Stable tag:\s*([\d.]+)
+      - (?im)^\s*Version:\s*([\d.]+)
+- id: wp-plugin-woocommerce-payments
+  product: wp-plugin:woocommerce-payments
+  requires:
+  - wordpress
+  http:
+  - path:
+    - /wp-content/plugins/woocommerce-payments/readme.txt
+    matchers:
+    - type: regex
+      regex:
+      - (?i)^\s*(?:Stable tag|Version):\s*\d
+    extractors:
+    - regex:
+      - (?im)^\s*Stable tag:\s*([\d.]+)
+      - (?im)^\s*Version:\s*([\d.]+)
+- id: wp-plugin-wp-automatic
+  product: wp-plugin:wp-automatic
+  requires:
+  - wordpress
+  http:
+  - path:
+    - /wp-content/plugins/wp-automatic/readme.txt
+    matchers:
+    - type: regex
+      regex:
+      - (?i)^\s*(?:Stable tag|Version):\s*\d
+    extractors:
+    - regex:
+      - (?im)^\s*Stable tag:\s*([\d.]+)
+      - (?im)^\s*Version:\s*([\d.]+)
+- id: wp-plugin-wp-fastest-cache
+  product: wp-plugin:wp-fastest-cache
+  requires:
+  - wordpress
+  http:
+  - path:
+    - /wp-content/plugins/wp-fastest-cache/readme.txt
+    matchers:
+    - type: regex
+      regex:
+      - (?i)^\s*(?:Stable tag|Version):\s*\d
+    extractors:
+    - regex:
+      - (?im)^\s*Stable tag:\s*([\d.]+)
+      - (?im)^\s*Version:\s*([\d.]+)
+- id: wp-plugin-wp-file-manager
+  product: wp-plugin:wp-file-manager
+  requires:
+  - wordpress
+  http:
+  - path:
+    - /wp-content/plugins/wp-file-manager/readme.txt
+    matchers:
+    - type: regex
+      regex:
+      - (?i)^\s*(?:Stable tag|Version):\s*\d
+    extractors:
+    - regex:
+      - (?im)^\s*Stable tag:\s*([\d.]+)
+      - (?im)^\s*Version:\s*([\d.]+)
+- id: wp-theme-bricks
+  product: wp-theme:bricks
+  requires:
+  - wordpress
+  http:
+  - path:
+    - /wp-content/themes/bricks/style.css
+    matchers:
+    - type: regex
+      regex:
+      - (?i)^\s*(?:Stable tag|Version):\s*\d
+    extractors:
+    - regex:
+      - (?im)^\s*Stable tag:\s*([\d.]+)
+      - (?im)^\s*Version:\s*([\d.]+)

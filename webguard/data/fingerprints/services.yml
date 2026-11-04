@@ -1,0 +1,19 @@
+# TCP service greetings (sent by the server on connect, or the reply to a plain HTTP HEAD on HTTP ports).
+- {id: openssh, product: openssh, service: {matchers: [{type: regex, part: banner, regex: ['^SSH-[\d.]+-OpenSSH_']}], extractors: [{regex: ['OpenSSH_([\w.]+)'], part: banner}]}}
+- {id: dropbear, product: dropbear, service: {matchers: [{type: regex, part: banner, regex: ['^SSH-[\d.]+-dropbear']}], extractors: [{regex: ['dropbear_([\d.]+)'], part: banner}]}}
+- {id: erlang-ssh, product: erlang_ssh, service: {matchers: [{type: regex, part: banner, regex: ['^SSH-[\d.]+-Erlang/']}], extractors: [{regex: ['Erlang/([\d.]+)'], part: banner}]}}
+- {id: vsftpd, product: vsftpd, service: {matchers: [{type: regex, part: banner, regex: ['^220.*vsFTPd']}], extractors: [{regex: ['vsFTPd ([\d.]+)'], part: banner}]}}
+- {id: proftpd, product: proftpd, service: {matchers: [{type: regex, part: banner, regex: ['^220.*ProFTPD']}], extractors: [{regex: ['ProFTPD ([\d.]+[a-z]?)'], part: banner}]}}
+- {id: filezilla-server, product: filezilla_server, service: {matchers: [{type: regex, part: banner, regex: ['^220.*FileZilla Server']}], extractors: [{regex: ['FileZilla Server(?: version)? ([\d.]+)'], part: banner}]}}
+- {id: pure-ftpd, product: pure_ftpd, service: {matchers: [{type: regex, part: banner, regex: ['Pure-FTPd']}]}}
+- {id: exim, product: exim, service: {matchers: [{type: regex, part: banner, regex: ['^220.*Exim']}], extractors: [{regex: ['Exim ([\d.]+)'], part: banner}]}}
+- {id: postfix, product: postfix, service: {matchers: [{type: regex, part: banner, regex: ['^220.*ESMTP Postfix']}]}}
+- {id: sendmail, product: sendmail, service: {matchers: [{type: regex, part: banner, regex: ['^220.*Sendmail']}], extractors: [{regex: ['Sendmail ([\d.]+)'], part: banner}]}}
+- {id: ms-smtp, product: microsoft_smtp, service: {matchers: [{type: regex, part: banner, regex: ['^220.*Microsoft ESMTP']}]}}
+- {id: dovecot, product: dovecot, service: {matchers: [{type: regex, part: banner, regex: ['Dovecot']}]}}
+- {id: vnc, product: vnc, service: {matchers: [{type: regex, part: banner, regex: ['^RFB \d{3}\.\d{3}']}], extractors: [{regex: ['^RFB (\d{3}\.\d{3})'], part: banner}]}}
+- {id: activemq-openwire, product: activemq, service: {matchers: [{type: word, part: banner, words: ["ActiveMQ"]}], extractors: [{regex: ['ProviderVersion.{1,8}?(\d+\.\d+\.\d+)'], part: banner}]}}
+- {id: mysql, product: mysql, service: {matchers: [{type: regex, part: banner, regex: ['(?s)^.{4}\n(?:5\.|8\.|9\.)\d+\.\d+']}], extractors: [{regex: ['(?s)^.{4}\n(\d+\.\d+\.\d+)'], part: banner}]}}
+- {id: mariadb, product: mariadb, service: {matchers: [{type: regex, part: banner, regex: ['MariaDB']}], extractors: [{regex: ['(\d+\.\d+\.\d+)-MariaDB'], part: banner}]}}
+- {id: telnet, product: telnet, service: {matchers: [{type: regex, part: banner, regex: ['^\xff[\xfb-\xfe]']}]}}
+- {id: http-server, product: http, service: {matchers: [{type: regex, part: banner, regex: ['^HTTP/\d']}]}}

@@ -1,0 +1,35 @@
+# Parameter-name corpus extension (merged into the built-in ParamClassifier corpus).
+id: [uid, user_id, userId, accountId, account_id, customerId, customer_id, orderId, order_id, item_id, itemId, productId,
+     product_id, pid, cid, oid, gid, tid, rid, sid_num, record, recordId, entry, entryId, post_id, postId, comment_id,
+     invoice, invoiceId, ticket, ticketId, doc_id, docId, object_id, objId, uuid, guid, ref_id, member_id, memberId,
+     profile_id, profileId, group_id, groupId, org_id, orgId, tenant_id, tenantId, project_id, projectId, report_id]
+file: [filename, file_name, filepath, file_path, path, pathname, folder, dir, directory, doc, document, attachment,
+       download, upload, template_file, include, inc, page_file, load_file, read, view, show, display, pdf, img_path,
+       image_path, log, logfile, config_file, conf, layout, skin, theme_file, locale_file, resource, asset]
+url: [uri, link, href, src, source, target_url, image_url, imageUrl, avatar_url, feed, feed_url, rss, webhook,
+      webhook_url, callback_url, endpoint, api_url, proxy, proxy_url, fetch, fetch_url, remote, remote_url, site,
+      website, homepage, domain, host_url, server_url, preview, preview_url, embed, oembed, import_url, link_url]
+redirect: [redirect_uri, redirect_url, redirectUrl, return, returnUrl, return_url, returnTo, return_to, next, next_url,
+           continue, continue_url, goto, go, dest, destination, forward, forward_url, success_url, cancel_url,
+           login_redirect, logout_redirect, back, backurl, out, exit, checkout_url, target]
+command: [cmd, command, exec, execute, run, ping, host, hostname, ip, ip_address, addr, address_ip, query_host,
+          nslookup, dig, traceroute, process, proc, daemon, shell, script, job, task_cmd, arg, args, options, opt]
+template: [template, tpl, tmpl, view_template, render, layout_name, name, greeting, message, msg, title, subject,
+           body_template, email_template, preview_text, content, text, description, headline, banner_text, signature]
+search: [q, query, search, s, keyword, keywords, kw, term, terms, find, filter, filters, lookup, needle, phrase,
+         search_term, searchTerm, text_search, qs, k, criteria, match]
+email: [email, mail, e_mail, emailAddress, email_address, user_email, contact_email, recipient, to, cc, bcc, from_email,
+        reply_to, notify_email, invite_email]
+auth: [token, access_token, accessToken, refresh_token, id_token, jwt, auth, authorization, api_key, apikey, apiKey,
+       key, secret, client_secret, session, sessionid, session_id, sid, csrf, csrf_token, xsrf, nonce, otp, code,
+       password, passwd, pwd, pass, username, user, login, signature, sig, hmac, state]
+sort: [sort, sort_by, sortBy, order, order_by, orderBy, orderby, dir, direction, asc, desc, sort_order, sortOrder,
+       column, col, field, group_by, groupBy, rank]
+data: [data, json, xml, payload, body, input, content_json, object, obj, serialized, state_blob, config, settings,
+       params, properties, attributes, metadata, meta, extra, blob, raw]
+flag: [debug, test, testing, admin, is_admin, isAdmin, role, roles, enabled, active, verbose, dev, beta, preview_mode,
+       internal, staff, superuser, privileged, mode, env, environment, feature, features, toggle, show_all, all, raw_mode,
+       trace, profile, explain]
+number: [page, page_no, pageNumber, p, limit, offset, count, size, per_page, perPage, pageSize, page_size, start, end,
+         from, to_num, max, min, amount, qty, quantity, price, total, year, month, day, age, weight, width, height, top, skip]
+lang: [lang, language, locale, l, hl, lc, country, region, i18n, translation, currency, timezone, tz]

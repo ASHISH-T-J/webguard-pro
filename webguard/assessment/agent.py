@@ -34,8 +34,10 @@ from webguard.analysis.grep import grep
 from webguard.assessment.methodology import CHECK_WSTG, PHASES, WSTG
 from webguard.config import ScanConfig
 from webguard.crawler import Crawler, CrawlResult, normalize_url
+from webguard.detection import reflection
 from webguard.detection.baseline import title as page_title
 from webguard.detection.checks import POINT_CHECKS, advanced, analyzers, dom, hunting, passive
+from webguard.detection.checks import api as api_checks
 from webguard.detection.checks import host as host_checks
 from webguard.detection.checks import oob as oob_checks
 from webguard.detection.checks import server as server_checks
@@ -117,6 +119,7 @@ class AssessmentResult:
     environment: str = "production"
     obstructed: dict[str, list[str]] = field(default_factory=dict)
     resilience: dict = field(default_factory=dict)
+    services: list[dict] = field(default_factory=list)
 
     def meta(self) -> dict:
         """Serializable assessment context for reports."""
@@ -131,7 +134,7 @@ class AssessmentResult:
                        for i in self.issues],
             "page_types": dict(Counter(p.label for p in self.page_types.values())),
             "reasoner": self.reasoner, "environment": self.environment,
-            "obstructed_inputs": self.obstructed, "resilience": self.resilience,
+            "obstructed_inputs": self.obstructed, "resilience": self.resilience, "services": self.services,
         }
 
 
@@ -195,6 +198,7 @@ class AssessmentAgent:
         self._variant_runs = 0
         self._client_params: dict[str, set[str]] = {}
         self._seen_status: dict[str, int] = {}
+        self._reflections: dict[tuple[str, str], dict] = {}
         self._t0 = time.time()
         self._cur_phase = "recon"
         self._p_done = self._p_total = 0
@@ -335,6 +339,9 @@ class AssessmentAgent:
     # ------------------------------------------------------------------ helpers
     def _report(self, f: Finding) -> None:
         f.context.setdefault("phase", self._cur_phase)
+        ref = self._reflections.get((urlsplit(f.url).path, f.parameter)) if f.parameter else None
+        if ref and f.check in ("xss", "ssti", "redirect", "crlf"):
+            f.context.setdefault("reflection", ref)
         for wid in CHECK_WSTG.get(f.check.split(":")[0], []):
             self.res.coverage[wid] = "vulnerable"
         if self.on_finding:
@@ -576,10 +583,15 @@ class AssessmentAgent:
             out.append(Candidate(cid, action, target, phase, why, prior, cost))
 
         if phase == "config":
+            if cfg.ports and cfg.enabled("server"):
+                for host in sorted({urlsplit(r).hostname for r in roots if urlsplit(r).hostname}):
+                    add("service_audit", host, f"network service audit ({cfg.ports} ports): banners, versions vs "
+                        "CVE/EOL data, exposed and cleartext services", 5, 0, "server")
             for root in roots:
                 add("headers", root, "baseline hardening: security headers, CSP, HTTP methods", 3, 3, "headers")
-                add("server_config", root, "web server audit: software versions vs CVE/EOL data, directory "
-                    "listing, default pages, admin/debug consoles, advertised methods", 4.5, 45, "server")
+                add("server_config", root, "web server audit: software versions (headers, pages, fingerprint "
+                    "templates) vs CVE/EOL data, directory listing, default pages, admin/debug consoles, methods",
+                    4.5, 95, "server")
                 if root.startswith("https://"):
                     add("tls", root, "TLS audit: protocols, cipher suites, certificate, HSTS, HTTP->HTTPS redirect",
                         5, 3, "tls")
@@ -666,6 +678,28 @@ class AssessmentAgent:
                 if "json" in r.content_type and advanced.ID_SEGMENT.search(urlsplit(u).path):
                     add("idor", u, "JSON object addressed by sequential id - neighbour ids may leak other users' data", 6, 2, "idor")
             authenticated = bool(cfg.headers or cfg.cookies)
+            api_json = [u for u, r in pages.items() if r.status == 200 and "json" in r.content_type
+                        and API_HINT.search(u)]
+            if authenticated and cfg.enabled("auth"):
+                private = [u for u in api_json if api_checks.private_fields(pages[u])]
+                if private:
+                    add("api_unauth", "api-endpoints", f"{len(private)} API endpoint(s) return account data: are "
+                        "they served without the session credentials too?", 6.5, min(15, len(private)), "auth")
+            seen_versions: set[str] = set()
+            for u in sorted(api_json):
+                m = api_checks.VERSION_SEG.search(urlsplit(u).path)
+                if m and urlsplit(u).path[: m.end()] not in seen_versions and len(seen_versions) < 3:
+                    seen_versions.add(urlsplit(u).path[: m.end()])
+                    add("api_versions", u, "versioned API: are older / beta / internal versions still deployed?",
+                        3.5, 6, "exposure")
+            if cfg.enabled("csrf"):
+                writes: dict[str, InjectionPoint] = {}
+                for p in self.res.points:
+                    if p.location == "json" and p.method.upper() in ("POST", "PUT", "PATCH"):
+                        writes.setdefault(f"{p.method.upper()} {p.url}", p)
+                for key in list(writes)[:4]:
+                    add("api_content_type", key, "JSON write endpoint: does it also accept form-encoded bodies "
+                        "(cross-site forms, CSRF)?", 3.5, 2, "csrf")
             if cfg.enabled("cache_deception"):
                 personal = [u for u, r in pages.items() if r.status == 200 and r.is_html and not SKIP_STATIC.search(u)
                             and (authenticated or r.headers.get_list("set-cookie")
@@ -777,6 +811,36 @@ class AssessmentAgent:
         elif a == "exposure":
             await host_checks.exposures(ctx, t)
             self._cover("exposure")
+        elif a == "api_unauth":
+            private = [u for u, r in self.res.pages.items() if r.status == 200 and "json" in r.content_type
+                       and API_HINT.search(u) and api_checks.private_fields(r)]
+            await api_checks.unauthenticated_access(ctx, private, self.res.pages, self.transport)
+            self._cover("auth")
+        elif a == "api_versions":
+            await api_checks.api_versions(ctx, t, self.res.pages.get(t))
+            self._cover("exposure")
+        elif a == "api_content_type":
+            method, url = t.split(" ", 1)
+            p = next((p for p in self.res.points if p.location == "json" and p.url == url
+                      and p.method.upper() == method), None)
+            if p is not None:
+                await api_checks.content_type_confusion(ctx, url, method, p.params)
+            self._cover("csrf")
+        elif a == "service_audit":
+            if cfg.proxy:
+                self.res.facts.append(f"Service audit of {t} skipped: raw TCP connections would bypass --proxy")
+            else:
+                from webguard.recon import services
+
+                found_services, findings = await services.audit(t, services.parse_ports(cfg.ports))
+                for f in findings:
+                    f.context.setdefault("phase", "config")
+                    ctx.report(f)
+                self.res.facts.append(f"Services on {t}: " + (", ".join(
+                    f"{s.port}/{s.service}" + (f" {s.product} {s.version or ''}".rstrip() if s.product else "")
+                    for s in found_services) or "no open ports in the scanned set"))
+                self.res.services = [s.to_dict() for s in found_services]
+            self._cover("server")
         elif a == "server_config":
             await server_checks.audit(ctx, t, self.res.pages)
             self._cover("server")
@@ -845,6 +909,15 @@ class AssessmentAgent:
                 hyps = [c for c in ("sqli", "xss", "ssti", "cmdi") if cfg.enabled(c)]
             thorough = self._budget_left() > 0.3 and p.location not in ("header", "cookie")
             order = hyps + ([x for x in POINT_CHECKS if x not in hyps and cfg.enabled(x)] if thorough else [])
+            # where does this input come back? (HTML / attribute / script / JSON / headers / Location)
+            ref = await reflection.analyse(ctx, p)
+            if ref is not None:
+                self._reflections[(urlsplit(p.url).path, p.name)] = ref.to_dict()
+                new_order = reflection.plan(order, ref, p.method, bool(self.budget_requests or self.budget_minutes))
+                if new_order != order:
+                    ui.debug(f"  reflection {sorted(ref.contexts) or ['none']} on {p.name}: "
+                             f"{' > '.join(new_order[:5])}")
+                order = new_order
             ACTIVE_ENCODING.set(p.encoding)  # task-local: labels findings made inside an encoded value
             for check in order:
                 if self._budget_left() <= 0:
@@ -869,7 +942,11 @@ class AssessmentAgent:
             await advanced.host_header(ctx, t)
             self._cover("host_header")
         elif a == "param_discovery":
-            new_points = await hunting.discover_params(ctx, t)
+            if not hasattr(self, "_site_params"):
+                from webguard.recon.params import site_param_names
+
+                self._site_params = site_param_names(self.res.pages)
+            new_points = await hunting.discover_params(ctx, t, extra_words=self._site_params)
             self.res.points += new_points
         elif a == "idor":
             await advanced.idor(ctx, t, self.res.pages[t])

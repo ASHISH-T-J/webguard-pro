@@ -22,6 +22,7 @@ import asyncio
 import json
 import logging
 import sys
+from collections import Counter
 from pathlib import Path
 
 from webguard import __version__, ui
@@ -102,6 +103,15 @@ EXAMPLES = {
   webguard ask "what should I fix first?" --llm claude
 """,
     "analyze": "examples:\n  webguard analyze 12\n",
+    "fuzz": """examples:
+  webguard fuzz "https://shop.example.com/FUZZ" -w dirs
+  webguard fuzz "https://shop.example.com/api/items?FUZZ=1" -w params -mc 200 -fs 0
+  webguard fuzz "https://shop.example.com/api/login" -X POST -H 'Content-Type: application/json' \\
+      -d '{"username":"FUZZ","password":"x"}' -w users.txt -mr 'invalid password'
+  webguard fuzz "https://shop.example.com/download?file=FUZZ" -w files.txt -o hits.json
+
+wordlists: a file, or built-in 'dirs', 'dirs-large', 'params'.  FUZZ in the host name is not supported.
+""",
     "db": "examples:\n  webguard db scans\n  webguard db findings --scan 12\n  webguard db label 42 fp\n  webguard db new example.com\n",
     "ml": "examples:\n  webguard ml status\n  webguard ml train\n",
     "tools": "examples:\n  webguard tools\n",
@@ -126,6 +136,8 @@ def _common(p: argparse.ArgumentParser) -> None:
     g = p.add_argument_group("scope & engagement")
     g.add_argument("--scope", help="scope file (.txt rules or .yml with include/exclude/exclude_paths)")
     g.add_argument("--subdomains", action="store_true", help="treat *.target as in scope")
+    g.add_argument("--ports", nargs="?", const="top", metavar="LIST",
+                   help="also audit network services: 'top' (default list) or e.g. 22,80,8000-8100")
     g.add_argument("-H", "--header", action="append", default=[], metavar="'Name: value'",
                    help="extra header on every request (e.g. bug bounty ID header, Authorization)")
     g.add_argument("--cookie", action="append", default=[], metavar="name=value", help="cookie for authenticated scans")
@@ -208,8 +220,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser = add_parser  # every sub-command gets a description and usage examples
 
     s = sub.add_parser("scan", help="scan a web application")
-    s.add_argument("targets", nargs="*", help="URL(s) or host(s)")
-    s.add_argument("-l", "--list", help="file with one target per line")
+    s.add_argument("targets", nargs="*", help="URLs, domains, IPs, host:port, CIDR ranges, or @file")
+    s.add_argument("-l", "--list", action="append", default=[], help="file with one target per line (repeatable)")
     _common(s)
 
     r = sub.add_parser("recon", help="reconnaissance for a domain")
@@ -271,7 +283,9 @@ def build_parser() -> argparse.ArgumentParser:
     msub.add_parser("status")
 
     asr = sub.add_parser("assess", help="autonomous methodology-driven assessment (plan -> test -> verify -> analyse)")
-    asr.add_argument("target", help="URL or host")
+    asr.add_argument("targets", nargs="*", metavar="target",
+                     help="URLs, domains, IPs, host:port, CIDR ranges, or @file")
+    asr.add_argument("-l", "--list", action="append", default=[], help="file with one target per line (repeatable)")
     asr.add_argument("--llm", default="local", help="reasoning engine: local (default), claude, ollama[:model]")
     asr.add_argument("--llm-model", help="model id (default claude-opus-5-5 for claude, qwen2.5:7b for ollama)")
     asr.add_argument("--llm-effort", default="high", choices=["low", "medium", "high", "xhigh", "max"],
@@ -303,6 +317,28 @@ def build_parser() -> argparse.ArgumentParser:
     an.add_argument("--db", default=str(DEFAULT_DB))
 
     sub.add_parser("tools", help="show external tools and signature database status")
+    fz = sub.add_parser("fuzz", help="ffuf-style fuzzing: FUZZ keyword in URL, header or body")
+    fz.add_argument("url", help="URL containing FUZZ (or FUZZ in -H / -d)")
+    fz.add_argument("-w", "--wordlist", required=True, help="wordlist file or built-in: dirs, dirs-large, params")
+    fz.add_argument("-X", "--method", default="GET")
+    fz.add_argument("-H", "--header", action="append", default=[], metavar="'Name: value'")
+    fz.add_argument("-d", "--data", help="request body (may contain FUZZ)")
+    fz.add_argument("--cookie", action="append", default=[], metavar="name=value")
+    fz.add_argument("-mc", dest="match_codes", help="match status codes, e.g. 200,301-302 (default: common)")
+    fz.add_argument("-fc", dest="filter_codes", help="filter status codes")
+    fz.add_argument("-fs", dest="filter_sizes", help="filter response sizes (bytes), comma list")
+    fz.add_argument("-fw", dest="filter_words", help="filter word counts")
+    fz.add_argument("-fl", dest="filter_lines", help="filter line counts")
+    fz.add_argument("-fr", dest="filter_regex", help="filter responses matching this regex")
+    fz.add_argument("-mr", dest="match_regex", help="only show responses matching this regex")
+    fz.add_argument("--no-calibrate", action="store_true", help="disable auto-calibration (soft-404 filtering)")
+    fz.add_argument("--rate", type=float, default=20.0)
+    fz.add_argument("-c", "--concurrency", type=int, default=20)
+    fz.add_argument("--timeout", type=float, default=10.0)
+    fz.add_argument("--proxy")
+    fz.add_argument("--scope", help="scope file (default: the URL's host)")
+    fz.add_argument("-o", "--output", help="write hits as JSON")
+    fz.add_argument("--no-color", action="store_true")
     w = sub.add_parser("wizard", help="guided mode: answers a few questions, explains and runs the right command")
     w.add_argument("--batch", action="store_true", help="accept the default answer for every question")
     return p
@@ -335,7 +371,7 @@ def make_config(args: argparse.Namespace) -> ScanConfig:
         max_urls=args.max_urls, proxy=args.proxy, headers=headers, cookies=cookies, checks=checks,
         time_delay=args.time_delay, timing_checks=not args.no_timing, param_discovery=args.param_discovery,
         oob=args.oob, oob_token=args.oob_token, oob_wait=args.oob_wait,
-        discovery_depth=args.discovery_depth, tamper=tamper, db_path=Path(args.db), model_path=Path(args.model), verbose=args.verbose or 0,
+        discovery_depth=args.discovery_depth, ports=getattr(args, "ports", None), tamper=tamper, db_path=Path(args.db), model_path=Path(args.model), verbose=args.verbose or 0,
         **({"discovery_wordlist": None} if args.no_discovery else
            {"discovery_wordlist": Path(args.wordlist), "wordlist": Path(args.wordlist)} if args.wordlist else {}),
     ), args.profile, explicit_wordlist=bool(args.wordlist) or args.no_discovery)
@@ -389,11 +425,7 @@ async def cmd_scan(args: argparse.Namespace) -> int:
     from webguard.reporting import write_all
     from webguard.signatures import SignatureDB
 
-    targets = list(args.targets)
-    if args.list:
-        targets += [line.strip() for line in Path(args.list).read_text().splitlines() if line.strip()]
-    if not targets:
-        raise SystemExit("no targets given")
+    targets = _targets(args)
     cfg = make_config(args)
     db = Database(cfg.db_path)
     sigdb = SignatureDB(args.signatures)
@@ -456,7 +488,37 @@ def _print_trace(step) -> None:
     ui.out("    " + ui.c("observed: ", "cyan") + step.observation[:600])
 
 
+def _targets(args) -> list[str]:
+    """Targets from arguments and -l files (URL, domain, IP, host:port, CIDR); invalid entries are reported."""
+    from webguard.targets import parse
+
+    targets, errors = parse(list(args.targets), list(args.list))
+    for e in errors:
+        ui.warn(f"skipping target: {e}")
+    if not targets:
+        raise SystemExit("no valid targets given")
+    if len(targets) > 1:
+        kinds = ", ".join(f"{n} {k}" for k, n in sorted(Counter(t.kind for t in targets).items()))
+        ui.status(f"{len(targets)} targets ({kinds})")
+    return [t.value for t in targets]
+
+
 async def cmd_assess(args: argparse.Namespace) -> int:
+    worst = 0
+    targets = _targets(args)
+    for i, target in enumerate(targets, 1):
+        if len(targets) > 1:
+            ui.out(ui.c(f"\n═══ target {i}/{len(targets)}: {target} ═══", "bold"))
+        try:
+            worst = max(worst, await _assess_one(args, target))
+        except SystemExit as exc:  # one bad target (e.g. out of scope) must not stop the rest
+            if len(targets) == 1:
+                raise
+            ui.error(f"{target}: {exc}")
+    return worst
+
+
+async def _assess_one(args: argparse.Namespace, target: str) -> int:
     from webguard.ai.reasoner import make_reasoner
     from webguard.assessment.agent import AssessmentAgent
     from webguard.assessment.methodology import RULES_OF_ENGAGEMENT
@@ -465,7 +527,7 @@ async def cmd_assess(args: argparse.Namespace) -> int:
 
     cfg = make_config(args)
     cfg.browser = not args.no_browser
-    scope = make_scope(args, args.target)
+    scope = make_scope(args, target)
     try:
         reasoner = make_reasoner(args.llm, args.llm_model, args.llm_effort)
     except ImportError:
@@ -475,20 +537,20 @@ async def cmd_assess(args: argparse.Namespace) -> int:
     ui.out(ui.c("Rules of engagement", "bold"))
     for rule in RULES_OF_ENGAGEMENT:
         ui.out("  - " + rule)
-    ui.status(f"Assessing {ui.c(args.target, 'bold')} with the {reasoner.name} reasoning engine")
+    ui.status(f"Assessing {ui.c(target, 'bold')} with the {reasoner.name} reasoning engine")
     db = Database(cfg.db_path)
-    sess = _session(args, cfg, args.target, "assess", reasoner.name)
-    scan_id = db.start_scan(args.target, "assess")
+    sess = _session(args, cfg, target, "assess", reasoner.name)
+    scan_id = db.start_scan(target, "assess")
     agent = AssessmentAgent(cfg, scope, reasoner, SignatureDB(args.signatures), on_finding=ui.print_finding,
                             on_status=ui.status, on_trace=_print_trace if args.show_trace else None,
                             budget_requests=args.budget_requests, budget_minutes=args.budget_minutes,
                             checkpoint=sess, on_stage=ui.stage)
     with _progress(args, agent.progress):
-        res = await agent.run(args.target)
+        res = await agent.run(target)
     sess.finish()
     await _screenshots(args, cfg, scope, res.findings)
-    new = _persist(db, scan_id, args.target, res)
-    paths = write_all(args.target, res.findings, Path(args.output), _formats(args.format), {"scan_id": scan_id, **res.meta()},
+    new = _persist(db, scan_id, target, res)
+    paths = write_all(target, res.findings, Path(args.output), _formats(args.format), {"scan_id": scan_id, **res.meta()},
                       _report_options(args))
     print(ui.c("\nExecutive summary", "bold"))
     print("  " + res.narrative.get("executive_summary", ""))
@@ -502,6 +564,51 @@ async def cmd_assess(args: argparse.Namespace) -> int:
     _summary(res.findings, new, res.stats, paths, scan_id)
     ui.status(f"Reasoning trace: {len(res.trace)} steps (webguard analyze {scan_id} / HTML report)")
     return 2 if any(f.severity >= Severity.HIGH for f in res.findings) else 0
+
+
+async def cmd_fuzz(args: argparse.Namespace) -> int:
+    import re
+
+    from webguard.fuzz import Filters, Fuzzer, load_words, parse_codes
+
+    headers = {}
+    for h in args.header:
+        if ":" not in h:
+            raise SystemExit(f"bad header {h!r}, expected 'Name: value'")
+        k, v = h.split(":", 1)
+        headers[k.strip()] = v.strip()
+    cfg = ScanConfig(rate_limit=args.rate, concurrency=args.concurrency, timeout=args.timeout, proxy=args.proxy,
+                     cookies=dict(c.split("=", 1) for c in args.cookie if "=" in c))
+    base = args.url.replace("FUZZ", "x")
+    scope = Scope.from_file(args.scope) if args.scope else Scope.for_target(base)
+    filters = Filters(filter_codes=parse_codes(args.filter_codes), filter_sizes=parse_codes(args.filter_sizes),
+                      filter_words=parse_codes(args.filter_words), filter_lines=parse_codes(args.filter_lines),
+                      filter_regex=re.compile(args.filter_regex) if args.filter_regex else None,
+                      match_regex=re.compile(args.match_regex) if args.match_regex else None)
+    if args.match_codes:
+        filters.match_codes = parse_codes(args.match_codes)
+    try:
+        words = load_words(args.wordlist)
+        fuzzer = Fuzzer(args.url, words, cfg, scope, args.method, headers, args.data, filters,
+                        calibrate=not args.no_calibrate)
+    except (OSError, ValueError) as exc:
+        raise SystemExit(str(exc)) from None
+    ui.status(f"Fuzzing {args.method.upper()} {args.url} with {len(words)} words")
+    colour = {2: "green", 3: "cyan", 4: "yellow", 5: "red"}
+
+    def show(h) -> None:
+        ui.out(f"{ui.c(f'{h.status:<4}', colour.get(h.status // 100, 'dim'))} size={h.size:<7} words={h.words:<6} "
+               f"lines={h.lines:<5} {h.elapsed_ms:>5}ms  {ui.c(h.value, 'bold')}"
+               + (ui.c(f"  -> {h.redirect}", "dim") if h.redirect else ""))
+
+    with ui.Progress(lambda: {"requests": fuzzer.client.stats["requests"] if hasattr(fuzzer, "client") else 0,
+                              "total": len(words)}):
+        hits = await fuzzer.run(on_hit=show)
+    ui.status(f"{len(hits)} result(s) from {len(words)} words")
+    if args.output:
+        Path(args.output).write_text(json.dumps([h.to_dict() for h in hits], indent=2))
+        ui.status(f"Results written to {args.output}")
+    return 0
 
 
 def cmd_grep(args: argparse.Namespace) -> int:
@@ -898,6 +1005,8 @@ def main(argv: list[str] | None = None) -> int:
             return asyncio.run(fn(args))
         if args.cmd == "grep":
             return cmd_grep(args)
+        if args.cmd == "fuzz":
+            return asyncio.run(cmd_fuzz(args))
         if args.cmd == "ask":
             return cmd_ask(args)
         if args.cmd == "analyze":

@@ -33,7 +33,7 @@ webguard = "webguard.cli:main"
 include = ["webguard*"]
 
 [tool.setuptools.package-data]
-webguard = ["data/*.txt", "data/signatures/*.json", "data/wordlists/*.txt", "data/cve/*.yml"]
+webguard = ["data/*.txt", "data/signatures/*.json", "data/wordlists/*.txt", "data/cve/*.yml", "data/fingerprints/*.yml", "data/nlp/*.yml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

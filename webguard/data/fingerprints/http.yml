@@ -1,0 +1,46 @@
+# HTTP fingerprints: product + version from public pages, headers and version endpoints (identification only).
+- {id: jenkins, product: jenkins, http: [{path: ["/"], matchers: [{type: header, name: x-jenkins}], extractors: [{type: header, name: x-jenkins, regex: '([\d.]+)'}]}]}
+- {id: grafana, product: grafana, http: [{path: ["/api/health"], matchers-condition: and, matchers: [{type: word, words: ['"database"']}, {type: word, words: ['"version"']}], extractors: [{regex: ['"version"\s*:\s*"([\d.]+[\w.-]*)"']}]}, {path: ["/login"], matchers: [{type: word, words: ["grafana-app", "Grafana"]}], extractors: [{regex: ['"version"\s*:\s*"([\d.]+)"']}]}]}
+- {id: elasticsearch, product: elasticsearch, http: [{path: ["/"], matchers: [{type: word, words: ["You Know, for Search"]}], extractors: [{regex: ['"number"\s*:\s*"([\d.]+)"']}]}]}
+- {id: kibana, product: kibana, http: [{path: ["/api/status", "/app/kibana"], matchers: [{type: header, name: kbn-version}, {type: header, name: kbn-name}], extractors: [{type: header, name: kbn-version, regex: '([\d.]+)'}, {regex: ['"number"\s*:\s*"([\d.]+)"']}]}]}
+- {id: solr, product: solr, http: [{path: ["/solr/admin/info/system?wt=json"], matchers: [{type: word, words: ["solr-spec-version"]}], extractors: [{regex: ['"solr-spec-version"\s*:\s*"([\d.]+)']}]}]}
+- {id: confluence, product: confluence, http: [{path: ["/login.action", "/"], matchers: [{type: word, words: ["Atlassian Confluence", "confluence-base-url"]}], extractors: [{regex: ['ajs-version-number" content="([\d.]+)"', 'Atlassian Confluence ([\d.]+)']}]}]}
+- {id: jira, product: jira, http: [{path: ["/rest/api/2/serverInfo"], matchers: [{type: word, words: ['"versionNumbers"']}], extractors: [{regex: ['"version"\s*:\s*"([\d.]+)"']}]}, {path: ["/secure/Dashboard.jspa"], matchers: [{type: word, words: ["jira.webresources", "JIRA"]}], extractors: [{regex: ['ajs-version-number" content="([\d.]+)"']}]}]}
+- {id: bitbucket, product: bitbucket, http: [{path: ["/login"], matchers: [{type: word, words: ["Bitbucket"]}, {type: word, words: ["bitbucket.page"]}], matchers-condition: and, extractors: [{regex: ['Bitbucket[^<]{0,40}?v(\d+\.\d+\.\d+)', 'ajs-version-number" content="([\d.]+)"']}]}]}
+- {id: teamcity, product: teamcity, http: [{path: ["/login.html"], matchers: [{type: word, words: ["TeamCity"]}], extractors: [{regex: ['Version (\d{4}\.\d+(?:\.\d+)?)']}]}]}
+- {id: gitlab, product: gitlab, http: [{path: ["/users/sign_in"], matchers: [{type: word, words: ["GitLab", "gon.gitlab_url"], condition: and}]}]}
+- {id: tomcat, product: tomcat, http: [{path: ["/docs/", "/wg-not-found-7f3a"], matchers: [{type: regex, regex: ['Apache Tomcat/\d']}], extractors: [{regex: ['Apache Tomcat/(\d+\.\d+\.\d+(?:[-.]M\d+)?)']}]}]}
+- {id: wordpress, product: wordpress, http: [{path: ["/feed/", "/"], matchers: [{type: regex, regex: ['wordpress\.org/\?v=', 'content="WordPress \d', '/wp-content/', '/wp-includes/']}], extractors: [{regex: ['wordpress\.org/\?v=([\d.]+)', 'content="WordPress ([\d.]+)"']}]}]}
+- {id: drupal, product: drupal, http: [{path: ["/CHANGELOG.txt", "/"], matchers: [{type: regex, regex: ['^Drupal \d', 'content="Drupal \d', 'X-Generator: Drupal'], part: all}], extractors: [{regex: ['^Drupal (\d+\.\d+)', 'content="Drupal (\d+(?:\.\d+)+)']}]}]}
+- {id: joomla, product: joomla, http: [{path: ["/administrator/manifests/files/joomla.xml"], matchers: [{type: word, words: ["<extension", "Joomla"], condition: and}], extractors: [{regex: ['<version>([\d.]+)</version>']}]}]}
+- {id: zabbix, product: zabbix, http: [{path: ["/", "/zabbix/"], matchers: [{type: word, words: ["Zabbix SIA", "zabbix.php"]}], extractors: [{regex: ['Zabbix (\d+\.\d+\.\d+)']}]}]}
+- {id: webmin, product: webmin, http: [{path: ["/"], matchers: [{type: header, name: server, regex: 'MiniServ'}], extractors: [{type: header, name: server, regex: 'MiniServ/([\d.]+)'}]}]}
+- {id: geoserver, product: geoserver, http: [{path: ["/geoserver/web/"], matchers: [{type: word, words: ["GeoServer"]}], extractors: [{regex: ['GeoServer (\d+\.\d+\.\d+)']}]}]}
+- {id: ofbiz, product: ofbiz, http: [{path: ["/webtools/control/main"], matchers: [{type: word, words: ["OFBiz"]}], extractors: [{regex: ['Release\s+(\d{2}\.\d{2}\.\d+)']}]}]}
+- {id: openfire, product: openfire, http: [{path: ["/login.jsp"], matchers: [{type: word, words: ["Openfire"]}], extractors: [{regex: ['Openfire, Version: ([\d.]+)']}]}]}
+- {id: papercut, product: papercut, http: [{path: ["/app"], matchers: [{type: word, words: ["PaperCut"]}], extractors: [{regex: ['PaperCut (?:MF|NG)[^<]{0,20}?(\d{2}\.\d+\.\d+)']}]}]}
+- {id: cacti, product: cacti, http: [{path: ["/cacti/", "/"], matchers: [{type: word, words: ["Login to Cacti", "cactiLogin"]}], extractors: [{regex: ['Version (\d+\.\d+\.\d+)']}]}]}
+- {id: phpmyadmin, product: phpmyadmin, http: [{path: ["/phpmyadmin/"], matchers: [{type: word, words: ["phpMyAdmin"]}], extractors: [{regex: ['PMA_VERSION:"([\d.]+)"', '\?v=(\d+\.\d+\.\d+)']}]}]}
+- {id: langflow, product: langflow, http: [{path: ["/api/v1/version"], matchers: [{type: word, words: ["langflow"]}], extractors: [{regex: ['"version"\s*:\s*"([\d.]+)"']}]}]}
+- {id: superset, product: superset, http: [{path: ["/login/"], matchers: [{type: word, words: ["Superset"]}]}]}
+- {id: craftcms, product: craftcms, http: [{path: ["/"], matchers: [{type: header, name: x-powered-by, regex: 'Craft CMS'}]}]}
+- {id: nextjs, product: nextjs, http: [{path: ["/"], matchers: [{type: header, name: x-powered-by, regex: 'Next\.js'}, {type: word, words: ["/_next/static/"]}]}]}
+- {id: vbulletin, product: vbulletin, http: [{path: ["/"], matchers: [{type: word, words: ["vBulletin"]}], extractors: [{regex: ['content="vBulletin (\d+\.\d+\.\d+)']}]}]}
+- {id: liferay, product: liferay, http: [{path: ["/"], matchers: [{type: header, name: liferay-portal}], extractors: [{type: header, name: liferay-portal, regex: '(\d+\.\d+\.\d+)'}]}]}
+- {id: screenconnect, product: screenconnect, http: [{path: ["/"], matchers: [{type: header, name: server, regex: 'ScreenConnect'}], extractors: [{type: header, name: server, regex: 'ScreenConnect/([\d.]+)'}]}]}
+- {id: crushftp, product: crushftp, http: [{path: ["/WebInterface/login.html"], matchers: [{type: word, words: ["CrushFTP"]}]}]}
+- {id: goanywhere, product: goanywhere, http: [{path: ["/goanywhere/auth/Login.xhtml"], matchers: [{type: word, words: ["GoAnywhere"]}], extractors: [{regex: ['GoAnywhere (\d+\.\d+\.\d+)']}]}]}
+- {id: activemq-console, product: activemq, http: [{path: ["/admin/"], matchers: [{type: header, name: www-authenticate, regex: 'ActiveMQ'}]}]}
+- {id: roundcube, product: roundcube, http: [{path: ["/"], matchers: [{type: word, words: ["rcmloginuser", "roundcube_sessid"]}]}]}
+- {id: argocd, product: argocd, http: [{path: ["/api/version"], matchers: [{type: word, words: ['"Version"', 'argo'], condition: and}], extractors: [{regex: ['"Version"\s*:\s*"v?([\d.]+)']}]}]}
+- {id: prometheus, product: prometheus, http: [{path: ["/api/v1/status/buildinfo"], matchers: [{type: word, words: ['"goVersion"']}], extractors: [{regex: ['"version"\s*:\s*"([\d.]+)"']}]}]}
+- {id: harbor, product: harbor, http: [{path: ["/api/v2.0/systeminfo"], matchers: [{type: word, words: ["harbor_version"]}], extractors: [{regex: ['"harbor_version"\s*:\s*"v?([\d.]+)']}]}]}
+- {id: sonarqube, product: sonarqube, http: [{path: ["/api/server/version"], matchers-condition: and, matchers: [{type: regex, regex: ['^\d+\.\d+(?:\.\d+)*\s*$']}, {type: header, name: sonarqube-version}], extractors: [{regex: ['^(\d+\.\d+(?:\.\d+)*)']}]}]}
+- {id: portainer, product: portainer, http: [{path: ["/api/status"], matchers: [{type: word, words: ['"Version"', '"InstanceID"'], condition: and}], extractors: [{regex: ['"Version"\s*:\s*"([\d.]+)"']}]}]}
+- {id: gitea, product: gitea, http: [{path: ["/api/v1/version"], matchers: [{type: regex, regex: ['^\{"version":"[\d.]+']}], extractors: [{regex: ['"version"\s*:\s*"([\d.]+)']}]}]}
+- {id: mattermost, product: mattermost, http: [{path: ["/"], matchers: [{type: header, name: x-version-id}], extractors: [{type: header, name: x-version-id, regex: '^(\d+\.\d+\.\d+)'}]}]}
+- {id: rocketchat, product: rocketchat, http: [{path: ["/api/info"], matchers: [{type: word, words: ['"version"', '"success":true'], condition: and}], extractors: [{regex: ['"version"\s*:\s*"([\d.]+)"']}]}]}
+- {id: minio, product: minio, http: [{path: ["/"], matchers: [{type: header, name: server, regex: 'MinIO'}]}]}
+- {id: nexus, product: nexus, http: [{path: ["/"], matchers: [{type: header, name: server, regex: 'Nexus/'}], extractors: [{type: header, name: server, regex: 'Nexus/([\d.]+)'}]}]}
+- {id: splunk, product: splunk, http: [{path: ["/en-US/account/login"], matchers: [{type: word, words: ["Splunk"]}], extractors: [{regex: ['"version"\s*:\s*"([\d.]+)"']}]}]}
+- {id: keycloak, product: keycloak, http: [{path: ["/realms/master", "/auth/realms/master"], matchers: [{type: word, words: ['"realm":"master"', 'token-service'], condition: and}]}]}

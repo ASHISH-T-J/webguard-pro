@@ -1,0 +1,48 @@
+# Page corpus extension (merged into the built-in PageClassifier corpus).
+login:
+  - "sign in to continue username or email password show password log in"
+  - "member login user name password login lost your password"
+  - "single sign-on continue with microsoft continue with github or use your password"
+registration:
+  - "sign up for free create your account username email password i agree to the terms of service"
+  - "register an account choose a username password confirm email newsletter"
+password_reset:
+  - "reset your password enter the email address associated with your account send reset link"
+  - "choose a new password new password confirm new password reset token expired"
+admin:
+  - "admin dashboard users settings logs system status manage roles permissions"
+  - "control panel site administration manage users plugins configuration backup"
+  - "administration console server status thread pools deployments applications"
+error:
+  - "internal server error the server encountered an unexpected condition please try again later"
+  - "something went wrong an error occurred while processing your request reference id"
+stack_trace:
+  - "exception traceback most recent call last file line in module error"
+  - "at java lang thread run caused by nullpointerexception stack trace"
+  - "fatal error uncaught exception in var www html on line stack trace"
+waf_block:
+  - "request blocked your request was blocked by the web application firewall incident id"
+  - "access denied you don't have permission to access this resource reference cloudflare ray id"
+  - "this request has been blocked for security reasons support id"
+not_found:
+  - "page not found the page you are looking for does not exist or has been moved 404"
+  - "404 we couldn't find that page go back home"
+api_json:
+  - "status ok data items total page limit id name created updated"
+  - "error unauthorized message invalid token code 401"
+docs:
+  - "api reference endpoints parameters request body responses schema try it out"
+  - "documentation getting started installation configuration examples"
+upload:
+  - "upload file choose file drag and drop files here max file size allowed types"
+search:
+  - "search results for showing results no results found refine your search filters"
+directory_listing:
+  - "index of parent directory name last modified size description"
+default_page:
+  - "it works this is the default web page for this server the web server software is running"
+  - "welcome to nginx if you see this page the nginx web server is successfully installed"
+content:
+  - "our products new arrivals best sellers free shipping on orders over add to cart"
+  - "latest news blog posts read more categories tags archives"
+  - "about us our team mission contact us careers privacy policy terms"

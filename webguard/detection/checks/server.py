@@ -100,6 +100,14 @@ async def inventory(ctx: Context, root: str, pages: list[Resp]) -> list[tuple[st
             if v and (product, v) not in seen:
                 seen[(product, v)] = (source, banner, 1.0)
     known = {p for p, _ in seen}
+    # fingerprint templates (nuclei-style, identification only; WordPress plugin templates gated on WordPress)
+    from webguard import fingerprints
+
+    for d in await fingerprints.run_http(ctx.client, root, known):
+        v = cve.normalize_version(d.version) if d.version else None
+        if v and (d.product, v) not in seen:
+            seen[(d.product, v)] = (f"fingerprint template '{d.template}' ({d.evidence})", "", 1.0)
+    known = {p for p, _ in seen}
     for r in samples:  # long tail: footers / about pages in free text (NLP, context-scored)
         if r.status == 200 and r.is_html:
             for product, version, conf in extract(r.text):
